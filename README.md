@@ -9,7 +9,9 @@ DocySign is a DocuSign-style web app for sending PDF documents out for electroni
 - Add recipients (needs to sign / needs to approve)
 - Place, move, and delete fields: signature, initials, full name, date, text
 - Draw or type a signature
-- In-app mailbox: signing requests and completed-document notices
+- Real SMTP email (Gmail or Postfix) plus an in-app mailbox
+- Signing-request emails with a link to open DocySign and sign
+- Completion emails with the final signed PDF attached
 - Inbox of documents waiting on you
 - Completed library shared with every party on the envelope
 - Preview, print, and download the original or stamped PDF
@@ -23,7 +25,7 @@ DocySign is a DocuSign-style web app for sending PDF documents out for electroni
 | Backend | Node.js, Express, multer, pdf-lib |
 | Storage | JSON file store (`backend/data/`) and uploaded PDFs (`backend/uploads/`) |
 
-Email is in-app (the Mail page), not SMTP. Recipients who sign up with the same email as the envelope see requests in Mail and To sign.
+Recipients receive real emails when SMTP is configured (Settings, or environment variables). Copies also land in the in-app Mail page. Recipients who sign up with the same email as the envelope see requests in Mail and To sign.
 
 ## Project structure
 
@@ -78,9 +80,10 @@ bash start.sh
 2. In Workspace, upload a PDF or click Use sample NDA.
 3. Add recipients with name and email.
 4. Place fields on the PDF for each person. Click the X on a box, or Delete in Placed fields, to remove it.
-5. Send for signature. Each recipient gets an in-app email with a signing link.
-6. Open Mail or To sign, fill the fields, and finish signing.
-7. When everyone has signed, the final PDF is emailed to all parties and appears under Completed. Preview, print, or download it from there.
+5. Open Settings and save Gmail (app password) or Postfix SMTP credentials.
+6. Send for signature. Each recipient gets a real email with a signing link (`/sign/:token`).
+7. Open the link (or Mail / To sign), fill the fields, and finish signing.
+8. When everyone has signed, every party gets a completion email with the final PDF attached. The document also appears under Completed.
 
 Use two accounts with different emails to demo the full loop (sender and signer).
 
@@ -92,6 +95,7 @@ Use two accounts with different emails to demo the full loop (sender and signer)
 | `/signup` `/login` | Accounts |
 | `/app` | Workspace (Sent, To sign, Completed) |
 | `/mail` | In-app mailbox |
+| `/settings` | SMTP (Gmail or Postfix) |
 | `/prepare/:id` | Place fields and send |
 | `/envelope/:id` | Envelope status and audit trail |
 | `/preview/:id` | Preview / print / download |
@@ -104,7 +108,10 @@ The backend listens on port 3001.
 - `POST /api/auth/signup` `POST /api/auth/login` `GET /api/auth/me`
 - `GET/POST /api/envelopes` `PUT /api/envelopes/:id` `POST /api/envelopes/:id/send`
 - `GET /api/inbox` `GET /api/library` `GET /api/stats` `GET /api/mail`
+- `GET/PUT /api/settings/smtp` `POST /api/settings/smtp/test`
 - `GET/POST /api/sign/:token`
+
+Copy `.env.example` to `.env` or save credentials in Settings. Do not commit passwords. Gmail needs an [App Password](https://myaccount.google.com/apppasswords), not your normal login.
 
 PDFs are stored under `backend/uploads/`. User, envelope, and mail data live in `backend/data/`. Both directories are gitignored.
 

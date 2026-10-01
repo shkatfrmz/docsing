@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { useAuth } from "../auth.jsx";
+import Logo from "../components/Logo.jsx";
 
 function ClayMountains({ peach = "#ffb084", ochre = "#e8b94a", lavender = "#b8a4ed" }) {
   return (
@@ -107,8 +108,7 @@ export default function Landing() {
         <div className="footer-inner">
           <div>
             <div className="brand" style={{ marginBottom: 12 }}>
-              <span className="brand-mark" />
-              DocySign
+              <Logo size={28} />
             </div>
             <p>Electronic signatures for teams that still need a real PDF at the end.</p>
           </div>

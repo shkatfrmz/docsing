@@ -5,6 +5,7 @@ import { useAuth } from "../auth.jsx";
 
 function badgeClass(status) {
   if (status === "completed") return "badge badge-completed";
+  if (status === "declined") return "badge badge-declined";
   if (status === "sent") return "badge badge-sent";
   return "badge badge-draft";
 }

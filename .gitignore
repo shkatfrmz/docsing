@@ -3,3 +3,4 @@ backend/uploads/
 backend/data/
 dist/
 .DS_Store
+.env

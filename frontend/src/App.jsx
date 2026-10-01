@@ -1,5 +1,6 @@
-import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Link, Navigate, Route, Routes, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "./auth.jsx";
+import Logo from "./components/Logo.jsx";
 import Landing from "./pages/Landing.jsx";
 import Login from "./pages/Login.jsx";
 import Signup from "./pages/Signup.jsx";
@@ -9,6 +10,8 @@ import Envelope from "./pages/Envelope.jsx";
 import Sign from "./pages/Sign.jsx";
 import Mail from "./pages/Mail.jsx";
 import Preview from "./pages/Preview.jsx";
+import Admin from "./pages/Admin.jsx";
+import Account from "./pages/Account.jsx";
 
 function Topbar() {
   const { pathname } = useLocation();
@@ -19,8 +22,7 @@ function Topbar() {
   return (
     <header className="topbar">
       <Link to={user ? "/app" : "/"} className="brand">
-        <span className="brand-mark" />
-        DocySign
+        <Logo size={28} />
       </Link>
       {home && !user && (
         <nav className="nav-center">
@@ -35,7 +37,8 @@ function Topbar() {
           <>
             <Link to="/app" className="nav-link">Workspace</Link>
             <Link to="/mail" className="nav-link">Mail</Link>
-            <span className="meta">{user.name}</span>
+            {user.role === "admin" && <Link to="/admin" className="nav-link">Admin</Link>}
+            <Link to="/account" className="nav-link">{user.name}</Link>
             <button
               type="button"
               className="btn btn-ghost"
@@ -66,10 +69,21 @@ function RequireAuth({ children }) {
   return children;
 }
 
+function RequireAdmin({ children }) {
+  const { user, ready } = useAuth();
+  const loc = useLocation();
+  if (!ready) return <div className="page">Loading…</div>;
+  if (!user) return <Navigate to="/login" replace state={{ from: loc.pathname }} />;
+  if (user.role !== "admin") return <Navigate to="/app" replace />;
+  return children;
+}
+
 function GuestOnly({ children }) {
   const { user, ready } = useAuth();
+  const [params] = useSearchParams();
+  const next = params.get("next");
   if (!ready) return <div className="page">Loading…</div>;
-  if (user) return <Navigate to="/app" replace />;
+  if (user) return <Navigate to={next && next.startsWith("/") ? next : "/app"} replace />;
   return children;
 }
 
@@ -83,6 +97,9 @@ export default function App() {
         <Route path="/signup" element={<GuestOnly><Signup /></GuestOnly>} />
         <Route path="/app" element={<RequireAuth><Dashboard /></RequireAuth>} />
         <Route path="/mail" element={<RequireAuth><Mail /></RequireAuth>} />
+        <Route path="/account" element={<RequireAuth><Account /></RequireAuth>} />
+        <Route path="/admin" element={<RequireAdmin><Admin /></RequireAdmin>} />
+        <Route path="/settings" element={<RequireAdmin><Navigate to="/admin" replace /></RequireAdmin>} />
         <Route path="/prepare/:id" element={<RequireAuth><Prepare /></RequireAuth>} />
         <Route path="/envelope/:id" element={<RequireAuth><Envelope /></RequireAuth>} />
         <Route path="/preview/:id" element={<RequireAuth><Preview /></RequireAuth>} />

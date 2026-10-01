@@ -1,12 +1,14 @@
 import { useState } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth.jsx";
 
 export default function Login() {
   const { login } = useAuth();
   const nav = useNavigate();
   const loc = useLocation();
-  const [email, setEmail] = useState("");
+  const [params] = useSearchParams();
+  const next = params.get("next") || loc.state?.from || "/app";
+  const [email, setEmail] = useState(params.get("email") || "");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -17,7 +19,7 @@ export default function Login() {
     setError("");
     try {
       await login({ email, password });
-      nav(loc.state?.from || "/app", { replace: true });
+      nav(next.startsWith("/") ? next : "/app", { replace: true });
     } catch (err) {
       setError(err.message);
     } finally {
@@ -40,7 +42,7 @@ export default function Login() {
           {busy ? "Signing in…" : "Log in"}
         </button>
         <p className="meta" style={{ marginTop: 16 }}>
-          New here? <Link to="/signup">Create an account</Link>
+          New here? <Link to={`/signup${email ? `?email=${encodeURIComponent(email)}&next=${encodeURIComponent(next)}` : ""}`}>Create an account</Link>
         </p>
       </form>
     </div>

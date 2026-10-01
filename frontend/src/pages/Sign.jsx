@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../api.js";
+import { useAuth } from "../auth.jsx";
+import Logo from "../components/Logo.jsx";
 import PdfViewer from "../components/PdfViewer.jsx";
 import SignaturePad from "../components/SignaturePad.jsx";
 
 export default function Sign() {
   const { token } = useParams();
+  const { user } = useAuth();
   const [info, setInfo] = useState(null);
   const [values, setValues] = useState({});
   const [active, setActive] = useState(null);
@@ -15,7 +18,10 @@ export default function Sign() {
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
   const [completed, setCompleted] = useState(false);
+  const [declined, setDeclined] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [showDecline, setShowDecline] = useState(false);
+  const [reason, setReason] = useState("");
 
   useEffect(() => {
     api.signInfo(token)
@@ -25,6 +31,9 @@ export default function Sign() {
         if (data.signer.status === "signed") {
           setDone(true);
           setCompleted(data.status === "completed");
+        }
+        if (data.signer.status === "declined" || data.status === "declined") {
+          setDeclined(true);
         }
       })
       .catch((e) => setError(e.message));
@@ -94,25 +103,55 @@ export default function Sign() {
     }
   }
 
+  async function declineDoc() {
+    setBusy(true);
+    setError("");
+    try {
+      await api.decline(token, reason);
+      setDeclined(true);
+      setShowDecline(false);
+      setInfo((prev) => prev ? {
+        ...prev,
+        status: "declined",
+        declineReason: reason,
+        signer: { ...prev.signer, status: "declined" },
+      } : prev);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (error && !info) {
     return (
       <div className="page">
         <h1 className="serif">Unable to open document</h1>
         <p className="error">{error}</p>
-        <Link className="btn btn-ghost" to="/login">Log in</Link>
+        <p className="meta">You can still sign from this email link without an account. If the link expired, ask the sender to resend.</p>
+        <div className="row" style={{ marginTop: 16 }}>
+          <Link className="btn btn-primary" to="/signup">Create a free account</Link>
+          <Link className="btn btn-ghost" to="/login">Log in</Link>
+        </div>
       </div>
     );
   }
   if (!info) return <div className="page">Loading signing session…</div>;
 
+  const invitedEmail = info.signer.email;
+  const sameAccount = !!(user && user.email === invitedEmail);
+  const signupQs = `email=${encodeURIComponent(invitedEmail)}&name=${encodeURIComponent(info.signer.name || "")}&next=${encodeURIComponent(`/sign/${token}`)}`;
+
   return (
     <div>
       <header className="topbar">
         <Link to="/" className="brand">
-          <span className="brand-mark" />
-          DocySign
+          <Logo size={28} />
         </Link>
-        <div className="meta">Signing as {info.signer.name} ({info.signer.email})</div>
+        <div className="meta">
+          Signing as {info.signer.name} ({info.signer.email})
+          {!info.hasAccount && !user && " · no account needed"}
+        </div>
       </header>
       <div className="page">
         <div className="page-head">
@@ -121,30 +160,62 @@ export default function Sign() {
             <h1 className="serif">{info.title}</h1>
             {info.message && <p>{info.message}</p>}
           </div>
-          {!done && (
-            <button type="button" className="btn btn-gold" disabled={busy} onClick={finish}>
-              {busy ? "Submitting…" : "Finish signing"}
-            </button>
+          {!done && !declined && (
+            <div className="row" style={{ flexWrap: "wrap" }}>
+              <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setShowDecline(true)}>
+                Decline
+              </button>
+              <button type="button" className="btn btn-gold" disabled={busy} onClick={finish}>
+                {busy ? "Submitting…" : "Finish signing"}
+              </button>
+            </div>
           )}
         </div>
         {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
+        {declined && (
+          <div className="card" style={{ marginBottom: 16 }}>
+            <h3>{info.signer.status === "declined" ? "You declined this document" : "This envelope was declined"}</h3>
+            <p className="meta">
+              “{info.title}” is closed. Everyone on the envelope was emailed.
+              {info.declineReason || reason ? ` Reason: ${info.declineReason || reason}` : ""}
+            </p>
+          </div>
+        )}
         {done && (
           <div className="card" style={{ marginBottom: 16 }}>
             <h3>Thank you, {info.signer.name}</h3>
             <p className="meta">
               {completed
-                ? "All parties have signed. Everyone received an email, and the final PDF is in each workspace."
+                ? "All parties have signed. Everyone received an email with the final PDF attached."
                 : "Your signature was captured. Other recipients still need to sign. You will get an email when the final PDF is ready."}
             </p>
-            <div className="row" style={{ marginTop: 12 }}>
+            {!user && (
+              <p className="meta" style={{ marginTop: 8 }}>
+                No DocySign account is required to sign. Create a free account with {invitedEmail} if you want this document in a workspace.
+              </p>
+            )}
+            {user && !sameAccount && (
+              <p className="meta" style={{ marginTop: 8 }}>
+                You are signed in as {user.email}. This invite is for {invitedEmail}. Workspace shows {user.email}’s documents, not this invite, unless you create or log into {invitedEmail}.
+              </p>
+            )}
+            <div className="row" style={{ marginTop: 12, flexWrap: "wrap" }}>
               {completed && (
+                <a className="btn btn-primary" href={`/api/sign/${token}/download`}>Download signed PDF</a>
+              )}
+              {sameAccount && (
                 <>
-                  <Link className="btn btn-primary" to={`/preview/${info.envelopeId}`}>Preview / print</Link>
-                  <a className="btn btn-ghost" href={`/api/sign/${token}/download`}>Download signed PDF</a>
+                  {completed && <Link className="btn btn-ghost" to={`/preview/${info.envelopeId}`}>Preview in workspace</Link>}
+                  <Link className="btn btn-ghost" to="/app">Go to workspace</Link>
+                  <Link className="btn btn-ghost" to="/mail">Open mail</Link>
                 </>
               )}
-              <Link className="btn btn-ghost" to="/app">Go to workspace</Link>
-              <Link className="btn btn-ghost" to="/mail">Open mail</Link>
+              {!user && (
+                <>
+                  <Link className="btn btn-gold" to={`/signup?${signupQs}`}>Create account as {invitedEmail}</Link>
+                  <Link className="btn btn-ghost" to={`/login?email=${encodeURIComponent(invitedEmail)}&next=${encodeURIComponent(`/sign/${token}`)}`}>I already have an account</Link>
+                </>
+              )}
             </div>
           </div>
         )}
@@ -162,7 +233,7 @@ export default function Sign() {
                   if (f.type === "date") setTyped(new Date().toLocaleDateString());
                   if (f.type === "name") setTyped(info.signer.name);
                 }}
-                disabled={done}
+                disabled={done || declined}
               >
                 <span>{f.type}</span>
                 <span>{values[f.id] ? "Filled" : "Required"}</span>
@@ -180,7 +251,7 @@ export default function Sign() {
             src={`/api/sign/${token}/file`}
             fields={fields}
             activeId={active?.id}
-            onSelect={(f) => !done && setActive(f)}
+            onSelect={(f) => !done && !declined && setActive(f)}
             renderValue={(f) => {
               if (f.value && f.value.startsWith("data:image")) {
                 return <img src={f.value} alt="" style={{ width: "100%", height: "100%", objectFit: "contain" }} />;
@@ -191,7 +262,7 @@ export default function Sign() {
         </div>
       </div>
 
-      {active && !done && (
+      {active && !done && !declined && (
         <div className="modal-back" onClick={() => setActive(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="kicker">Fill field</div>
@@ -221,6 +292,30 @@ export default function Sign() {
             <div className="row" style={{ marginTop: 16, justifyContent: "flex-end" }}>
               <button type="button" className="btn btn-ghost" onClick={() => setActive(null)}>Cancel</button>
               <button type="button" className="btn btn-gold" onClick={saveField}>Adopt and continue</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDecline && !declined && (
+        <div className="modal-back" onClick={() => setShowDecline(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="kicker">Decline to sign</div>
+            <h2 className="serif" style={{ margin: "6px 0 14px" }}>Close this envelope?</h2>
+            <p className="meta">Everyone on “{info.title}” will be emailed. No further signatures will be collected.</p>
+            <label className="label">Reason (optional)</label>
+            <textarea
+              className="input"
+              rows={3}
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="I cannot sign this document because…"
+            />
+            <div className="row" style={{ marginTop: 16, justifyContent: "flex-end" }}>
+              <button type="button" className="btn btn-ghost" onClick={() => setShowDecline(false)}>Keep reviewing</button>
+              <button type="button" className="btn btn-danger" disabled={busy} onClick={declineDoc}>
+                {busy ? "Declining…" : "Decline and notify"}
+              </button>
             </div>
           </div>
         </div>

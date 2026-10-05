@@ -41,8 +41,8 @@ export default function Landing() {
           </div>
           <div className="stats">
             <div className="stat"><b>Inbox</b><span>Requests land by email</span></div>
-            <div className="stat"><b>Routing</b><span>Signers and approvers</span></div>
-            <div className="stat"><b>Archive</b><span>Stamped PDF download</span></div>
+            <div className="stat"><b>Routing</b><span>Sequential or parallel</span></div>
+            <div className="stat"><b>Templates</b><span>Reuse field placement</span></div>
           </div>
         </div>
         <div className="hero-illustration-card">
@@ -58,7 +58,7 @@ export default function Landing() {
         </div>
         <div className="feature feature-teal">
           <h3>Route to people</h3>
-          <p>Add teammates, managers, or outside signers. Each person gets a private link and only fills their fields.</p>
+          <p>Add teammates, managers, or outside signers. Send in parallel or in order. Each person gets a private link and only fills their fields.</p>
           <div className="mock-chip">Needs to sign</div>
         </div>
         <div className="feature feature-lavender">

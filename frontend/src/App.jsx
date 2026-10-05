@@ -12,6 +12,7 @@ import Mail from "./pages/Mail.jsx";
 import Preview from "./pages/Preview.jsx";
 import Admin from "./pages/Admin.jsx";
 import Account from "./pages/Account.jsx";
+import Contacts from "./pages/Contacts.jsx";
 
 function Topbar() {
   const { pathname } = useLocation();
@@ -37,6 +38,7 @@ function Topbar() {
           <>
             <Link to="/app" className="nav-link">Workspace</Link>
             <Link to="/mail" className="nav-link">Mail</Link>
+            <Link to="/contacts" className="nav-link">Contacts</Link>
             {user.role === "admin" && <Link to="/admin" className="nav-link">Admin</Link>}
             <Link to="/account" className="nav-link">{user.name}</Link>
             <button
@@ -98,6 +100,7 @@ export default function App() {
         <Route path="/app" element={<RequireAuth><Dashboard /></RequireAuth>} />
         <Route path="/mail" element={<RequireAuth><Mail /></RequireAuth>} />
         <Route path="/account" element={<RequireAuth><Account /></RequireAuth>} />
+        <Route path="/contacts" element={<RequireAuth><Contacts /></RequireAuth>} />
         <Route path="/admin" element={<RequireAdmin><Admin /></RequireAdmin>} />
         <Route path="/settings" element={<RequireAdmin><Navigate to="/admin" replace /></RequireAdmin>} />
         <Route path="/prepare/:id" element={<RequireAuth><Prepare /></RequireAuth>} />

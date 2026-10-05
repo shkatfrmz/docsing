@@ -168,9 +168,10 @@ async function sendMail(settings, { to, toName, subject, html, text, attachments
   return { sent: true, skipped: false };
 }
 
-async function sendRequestEmails(settings, { senderName, senderEmail, envelope, origin }) {
+async function sendRequestEmails(settings, { senderName, senderEmail, envelope, origin, signers }) {
   const results = [];
-  for (const signer of envelope.signers) {
+  const targets = signers && signers.length ? signers : envelope.signers;
+  for (const signer of targets) {
     const link = `${origin}/sign/${signer.token}`;
     const action = signer.role === "approver" ? "approve" : "sign";
     const html = wrapHtml({
@@ -212,6 +213,12 @@ async function sendCompletedEmails(settings, { envelope, origin, pdfPath, owner 
     if (seen.has(key)) continue;
     seen.add(key);
     recipients.push({ name: s.name, email: s.email });
+  }
+  for (const c of envelope.cc || []) {
+    const key = String(c.email || "").toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    recipients.push({ name: c.name, email: c.email });
   }
   if (owner && owner.email && !seen.has(owner.email.toLowerCase())) {
     recipients.push({ name: owner.name, email: owner.email });
@@ -308,6 +315,12 @@ async function sendDeclinedEmails(settings, { envelope, origin, signer, reason, 
     seen.add(key);
     recipients.push({ name: s.name, email: s.email });
   }
+  for (const c of envelope.cc || []) {
+    const key = String(c.email || "").toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    recipients.push({ name: c.name, email: c.email });
+  }
   if (owner && owner.email && !seen.has(owner.email.toLowerCase())) {
     recipients.push({ name: owner.name, email: owner.email });
   }
@@ -344,6 +357,90 @@ async function sendDeclinedEmails(settings, { envelope, origin, signer, reason, 
   return results;
 }
 
+async function sendVoidedEmails(settings, { envelope, origin, reason, owner, actorName }) {
+  const recipients = [];
+  const seen = new Set();
+  for (const s of envelope.signers) {
+    const key = s.email.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    recipients.push({ name: s.name, email: s.email });
+  }
+  for (const c of envelope.cc || []) {
+    const key = String(c.email || "").toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    recipients.push({ name: c.name, email: c.email });
+  }
+  if (owner && owner.email && !seen.has(owner.email.toLowerCase())) {
+    recipients.push({ name: owner.name, email: owner.email });
+  }
+  const results = [];
+  for (const recipient of recipients) {
+    const html = wrapHtml({
+      intro: "Envelope voided",
+      title: `“${escapeHtml(envelope.title)}” is no longer open for signature`,
+      greeting: `Hello ${escapeHtml(recipient.name || "")},`,
+      body: `${escapeHtml(actorName || "The sender")} voided this envelope. No further signatures will be collected.`,
+      details: [
+        { label: "Document", value: escapeHtml(envelope.title) },
+        { label: "Voided by", value: escapeHtml(actorName || "Sender") },
+        reason ? { label: "Reason", value: escapeHtml(reason) } : null,
+        { label: "Status", value: "Voided" },
+      ],
+      ctaLabel: "",
+      ctaHref: "",
+      footer: `This notice was sent to every party on the envelope. Workspace: ${origin}/app`,
+    });
+    try {
+      const res = await sendMail(settings, {
+        to: recipient.email,
+        toName: recipient.name,
+        subject: `Voided: “${envelope.title}” is no longer open for signature`,
+        html,
+        text: `${actorName} voided “${envelope.title}”.${reason ? ` Reason: ${reason}` : ""}`,
+      });
+      results.push({ email: recipient.email, ...res });
+    } catch (err) {
+      results.push({ email: recipient.email, sent: false, error: err.message });
+    }
+  }
+  return results;
+}
+
+async function sendCcEmails(settings, { envelope, origin, copies }) {
+  const results = [];
+  const link = `${origin}/envelope/${envelope.id}`;
+  for (const recipient of copies || []) {
+    const html = wrapHtml({
+      intro: "Copied on an envelope",
+      title: `You were copied on “${escapeHtml(envelope.title)}”`,
+      greeting: `Hello ${escapeHtml(recipient.name || "")},`,
+      body: `You were added as a carbon copy on this envelope. You do not need to sign. You will receive the completed PDF when every signer has finished.`,
+      details: [
+        { label: "Document", value: escapeHtml(envelope.title) },
+        { label: "Status", value: "Out for signature" },
+      ],
+      ctaLabel: "",
+      ctaHref: "",
+      footer: `Open in DocySign after you create an account with ${escapeHtml(recipient.email)}. ${link}`,
+    });
+    try {
+      const res = await sendMail(settings, {
+        to: recipient.email,
+        toName: recipient.name,
+        subject: `Copied: “${envelope.title}” was sent for signature`,
+        html,
+        text: `You were copied on “${envelope.title}”.`,
+      });
+      results.push({ email: recipient.email, ...res });
+    } catch (err) {
+      results.push({ email: recipient.email, sent: false, error: err.message });
+    }
+  }
+  return results;
+}
+
 async function sendTestEmail(settings, to) {
   const html = wrapHtml({
     intro: "Delivery test",
@@ -371,5 +468,7 @@ module.exports = {
   sendCompletedEmails,
   sendReminderEmails,
   sendDeclinedEmails,
+  sendVoidedEmails,
+  sendCcEmails,
   sendTestEmail,
 };

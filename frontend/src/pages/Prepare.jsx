@@ -10,6 +10,7 @@ const FIELD_TYPES = [
   { type: "name", label: "Full name", w: 22, h: 6 },
   { type: "date", label: "Date signed", w: 16, h: 6 },
   { type: "text", label: "Text", w: 20, h: 6 },
+  { type: "checkbox", label: "Checkbox", w: 4, h: 4 },
 ];
 
 function uid() {
@@ -25,6 +26,10 @@ export default function Prepare() {
   const [message, setMessage] = useState("");
   const [signers, setSigners] = useState([]);
   const [fields, setFields] = useState([]);
+  const [cc, setCc] = useState([]);
+  const [signingOrder, setSigningOrder] = useState(false);
+  const [expiresAt, setExpiresAt] = useState("");
+  const [contacts, setContacts] = useState([]);
   const [placing, setPlacing] = useState(null);
   const [activeId, setActiveId] = useState(null);
   const [error, setError] = useState("");
@@ -44,19 +49,64 @@ export default function Prepare() {
         id: uid(), name: user.name, email: user.email, role: "signer", order: 1,
       }]);
       setFields(data.fields || []);
+      setCc(data.cc || []);
+      setSigningOrder(!!data.signingOrder);
+      setExpiresAt(data.expiresAt ? data.expiresAt.slice(0, 10) : "");
     }).catch((e) => setError(e.message));
+    api.contacts().then(setContacts).catch(() => {});
   }, [id, nav, user]);
 
   const activeSigner = signers[0]
     ? signers.find((s) => s.id === (placing?.signerId || signers[0].id)) || signers[0]
     : null;
 
-  const payload = useMemo(() => ({ title, message, signers, fields }), [title, message, signers, fields]);
+  const payload = useMemo(() => ({
+    title,
+    message,
+    signers: signers.map((s, i) => ({ ...s, order: i + 1 })),
+    fields,
+    cc,
+    signingOrder,
+    expiresAt: expiresAt || null,
+  }), [title, message, signers, fields, cc, signingOrder, expiresAt]);
 
-  function addSigner() {
+  function addSigner(preset) {
     setSigners((prev) => [...prev, {
-      id: uid(), name: "", email: "", role: "signer", order: prev.length + 1,
+      id: uid(),
+      name: preset?.name || "",
+      email: preset?.email || "",
+      role: "signer",
+      order: prev.length + 1,
     }]);
+  }
+
+  function moveSigner(sid, dir) {
+    setSigners((prev) => {
+      const idx = prev.findIndex((s) => s.id === sid);
+      const next = idx + dir;
+      if (idx < 0 || next < 0 || next >= prev.length) return prev;
+      const copy = [...prev];
+      const tmp = copy[idx];
+      copy[idx] = copy[next];
+      copy[next] = tmp;
+      return copy.map((s, i) => ({ ...s, order: i + 1 }));
+    });
+  }
+
+  function addCc(preset) {
+    setCc((prev) => [...prev, {
+      id: uid(),
+      name: preset?.name || "",
+      email: preset?.email || "",
+    }]);
+  }
+
+  function updateCc(cid, patch) {
+    setCc((prev) => prev.map((c) => (c.id === cid ? { ...c, ...patch } : c)));
+  }
+
+  function removeCc(cid) {
+    setCc((prev) => prev.filter((c) => c.id !== cid));
   }
 
   function updateSigner(sid, patch) {
@@ -156,6 +206,14 @@ export default function Prepare() {
           <label className="label">Message to signers</label>
           <textarea className="textarea" value={message} onChange={(e) => setMessage(e.target.value)} placeholder="Please review and sign." />
 
+          <label className="label">Routing</label>
+          <label className="check-label" style={{ marginBottom: 10 }}>
+            <input type="checkbox" checked={signingOrder} onChange={(e) => setSigningOrder(e.target.checked)} />
+            Sign in order (sequential)
+          </label>
+          <label className="label">Expires (optional)</label>
+          <input className="input" type="date" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} />
+
           <label className="label">Recipients</label>
           {signers.map((s, i) => (
             <div key={s.id} className="signer-item">
@@ -167,13 +225,50 @@ export default function Prepare() {
                 <option value="signer">Needs to sign</option>
                 <option value="approver">Needs to approve</option>
               </select>
-              {signers.length > 1 && (
-                <button type="button" className="btn btn-ghost btn-sm" style={{ marginTop: 8 }} onClick={() => removeSigner(s.id)}>Remove</button>
-              )}
-              <div className="hint">Recipient {i + 1}</div>
+              <div className="row" style={{ marginTop: 8 }}>
+                {signingOrder && (
+                  <>
+                    <button type="button" className="btn btn-ghost btn-sm" disabled={i === 0} onClick={() => moveSigner(s.id, -1)}>Up</button>
+                    <button type="button" className="btn btn-ghost btn-sm" disabled={i === signers.length - 1} onClick={() => moveSigner(s.id, 1)}>Down</button>
+                  </>
+                )}
+                {signers.length > 1 && (
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => removeSigner(s.id)}>Remove</button>
+                )}
+              </div>
+              <div className="hint">{signingOrder ? `Signs ${i + 1}${i === 0 ? "st" : i === 1 ? "nd" : i === 2 ? "rd" : "th"}` : `Recipient ${i + 1}`}</div>
             </div>
           ))}
-          <button type="button" className="btn btn-ghost btn-sm" onClick={addSigner}>Add recipient</button>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => addSigner()}>Add recipient</button>
+          {!!contacts.length && (
+            <select
+              className="input"
+              style={{ marginTop: 8 }}
+              defaultValue=""
+              onChange={(e) => {
+                const c = contacts.find((x) => x.id === e.target.value);
+                if (c) addSigner(c);
+                e.target.value = "";
+              }}
+            >
+              <option value="">Add from contacts…</option>
+              {contacts.map((c) => (
+                <option key={c.id} value={c.id}>{c.name} ({c.email})</option>
+              ))}
+            </select>
+          )}
+
+          <label className="label">Carbon copy</label>
+          <p className="hint">CC recipients get notified but do not sign.</p>
+          {cc.map((c) => (
+            <div key={c.id} className="signer-item">
+              <input className="input" placeholder="Name" value={c.name} onChange={(e) => updateCc(c.id, { name: e.target.value })} />
+              <div style={{ height: 8 }} />
+              <input className="input" type="email" placeholder="Email" value={c.email} onChange={(e) => updateCc(c.id, { email: e.target.value })} />
+              <button type="button" className="btn btn-ghost btn-sm" style={{ marginTop: 8 }} onClick={() => removeCc(c.id)}>Remove</button>
+            </div>
+          ))}
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => addCc()}>Add CC</button>
 
           <label className="label">Place a field</label>
           <p className="hint">Select a field, then click the PDF.</p>

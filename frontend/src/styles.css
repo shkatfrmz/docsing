@@ -305,6 +305,7 @@ button, a.btn {
 .badge-pending { background: var(--ochre); color: var(--ink); }
 .badge-signed { background: var(--mint); color: var(--ink); }
 .badge-declined { background: #fde8e6; color: var(--error); }
+.badge-expired { background: var(--strong); color: var(--muted); }
 
 .empty {
   text-align: center;
@@ -937,6 +938,12 @@ button, a.btn {
   color: var(--body-strong);
   font-weight: 500;
 }
+.search-inline {
+  margin-left: auto;
+  max-width: 240px;
+  min-height: 36px;
+  padding: 8px 12px;
+}
 
 @media (max-width: 1024px) {
   .nav-center { display: none; }
@@ -967,4 +974,5 @@ button, a.btn {
   .sidebar { position: static; }
   .cta-band { padding: 48px 24px; margin: 0 20px 64px; }
   .admin-split { grid-template-columns: 1fr; }
+  .search-inline { margin-left: 0; max-width: 100%; }
 }

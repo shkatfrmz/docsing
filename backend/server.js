@@ -6,7 +6,7 @@ const fs = require("fs");
 const { randomUUID: uuid } = require("crypto");
 const store = require("./store");
 const { stampEnvelope, createSampleContract } = require("./pdf");
-const { requestEmail, completedEmail, reminderEmail, declinedEmail } = require("./mail");
+const { requestEmail, completedEmail, reminderEmail, declinedEmail, voidedEmail, ccEmail } = require("./mail");
 const smtp = require("./smtp");
 
 function loadEnvFile() {
@@ -67,8 +67,25 @@ function addAudit(envelope, actor, action) {
   });
 }
 
+function currentSigner(env) {
+  if (!env.signingOrder) return null;
+  const ordered = [...env.signers].sort((a, b) => (a.order || 0) - (b.order || 0));
+  return ordered.find((s) => s.status === "pending") || null;
+}
+
+function expireIfNeeded(env) {
+  if (!env || env.status !== "sent" || !env.expiresAt) return env;
+  if (new Date(env.expiresAt).getTime() > Date.now()) return env;
+  env.status = "expired";
+  env.expiredAt = new Date().toISOString();
+  addAudit(env, "DocySign", `Envelope expired on ${new Date(env.expiresAt).toLocaleDateString()}`);
+  store.saveEnvelope(env);
+  return env;
+}
+
 function publicEnvelope(env, { includeTokens = false, viewerEmail = "" } = {}) {
   const viewer = String(viewerEmail || "").toLowerCase();
+  const turn = currentSigner(env);
   return {
     id: env.id,
     ownerId: env.ownerId,
@@ -80,17 +97,29 @@ function publicEnvelope(env, { includeTokens = false, viewerEmail = "" } = {}) {
     completedAt: env.completedAt,
     declinedAt: env.declinedAt,
     sentAt: env.sentAt,
+    voidedAt: env.voidedAt || null,
+    expiredAt: env.expiredAt || null,
+    expiresAt: env.expiresAt || null,
     message: env.message,
     declineReason: env.declineReason || "",
+    voidReason: env.voidReason || "",
     lastRemindedAt: env.lastRemindedAt || null,
+    signingOrder: !!env.signingOrder,
+    currentSignerId: turn ? turn.id : null,
+    cc: (env.cc || []).map((c) => ({
+      id: c.id,
+      name: c.name,
+      email: c.email,
+    })),
     signers: env.signers.map((s) => {
       const showToken = includeTokens || s.email.toLowerCase() === viewer;
+      const waitingOnPrior = !!(env.signingOrder && turn && s.id !== turn.id && s.status === "pending");
       return {
         id: s.id,
         name: s.name,
         email: s.email,
         role: s.role,
-        status: s.status,
+        status: waitingOnPrior ? "waiting" : s.status,
         order: s.order,
         signedAt: s.signedAt,
         declinedAt: s.declinedAt,
@@ -132,7 +161,9 @@ function optionalAuth(req, _res, next) {
 function canView(env, user) {
   if (!user) return false;
   if (env.ownerId === user.id) return true;
-  return env.signers.some((s) => s.email.toLowerCase() === user.email);
+  const email = user.email.toLowerCase();
+  if (env.signers.some((s) => s.email.toLowerCase() === email)) return true;
+  return (env.cc || []).some((c) => String(c.email || "").toLowerCase() === email);
 }
 
 function appOrigin(req) {
@@ -164,12 +195,23 @@ function smtpAuditLine(results, fallback) {
   return fallback;
 }
 
-async function notifySend(req, env) {
+function recipientsToNotify(env) {
+  if (!env.signingOrder) return env.signers.filter((s) => s.status === "pending");
+  const next = currentSigner(env);
+  return next ? [next] : [];
+}
+
+async function notifySend(req, env, signers) {
   const origin = appOrigin(req);
-  const messages = env.signers.map((signer) =>
+  const targets = signers && signers.length ? signers : recipientsToNotify(env);
+  if (!targets.length) return [];
+  const owner = store.getUser(env.ownerId);
+  const senderName = (req.user && req.user.name) || (owner && owner.name) || "DocySign";
+  const senderEmail = (req.user && req.user.email) || (owner && owner.email) || "docs@docysign.app";
+  const messages = targets.map((signer) =>
     requestEmail({
-      senderName: req.user.name,
-      senderEmail: req.user.email,
+      senderName,
+      senderEmail,
       signer,
       envelope: env,
       origin,
@@ -179,10 +221,11 @@ async function notifySend(req, env) {
   let results = [];
   try {
     results = await smtp.sendRequestEmails(activeSmtp(), {
-      senderName: req.user.name,
-      senderEmail: req.user.email,
+      senderName,
+      senderEmail,
       envelope: env,
       origin,
+      signers: targets,
     });
   } catch (err) {
     results = [{ email: "smtp", sent: false, error: err.message }];
@@ -190,8 +233,32 @@ async function notifySend(req, env) {
   addAudit(
     env,
     "DocySign",
-    smtpAuditLine(results, `Emailed signing request to ${env.signers.map((s) => s.email).join(", ")}`)
+    smtpAuditLine(results, `Emailed signing request to ${targets.map((s) => s.email).join(", ")}`)
   );
+  return results;
+}
+
+async function notifyCc(req, env) {
+  const origin = appOrigin(req);
+  const copies = env.cc || [];
+  if (!copies.length) return [];
+  store.addMail(copies.map((recipient) => ccEmail({ recipient, envelope: env, origin })));
+  let results = [];
+  try {
+    results = await smtp.sendCcEmails(activeSmtp(), {
+      envelope: env,
+      origin,
+      copies,
+    });
+  } catch (err) {
+    results = [{ email: "smtp", sent: false, error: err.message }];
+  }
+  addAudit(
+    env,
+    "DocySign",
+    smtpAuditLine(results, `Copied ${copies.map((c) => c.email).join(", ")} on this envelope`)
+  );
+  return results;
 }
 
 function envelopeParties(env) {
@@ -204,10 +271,34 @@ function envelopeParties(env) {
     seen.add(key);
     recipients.push({ name: s.name, email: s.email });
   }
+  for (const c of env.cc || []) {
+    const key = String(c.email || "").toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    recipients.push({ name: c.name, email: c.email });
+  }
   if (owner && owner.email && !seen.has(owner.email.toLowerCase())) {
     recipients.push({ name: owner.name, email: owner.email });
   }
   return { owner, recipients };
+}
+
+function normalizeCc(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const c of list) {
+    const email = String(c.email || "").trim().toLowerCase();
+    if (!email || seen.has(email)) continue;
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) continue;
+    seen.add(email);
+    out.push({
+      id: c.id || uuid(),
+      name: String(c.name || "").trim() || email,
+      email,
+    });
+  }
+  return out;
 }
 
 async function notifyRemind(req, env, signers) {
@@ -268,20 +359,34 @@ async function notifyDeclined(req, env, signer, reason) {
   );
 }
 
+async function notifyVoided(req, env, reason) {
+  const origin = appOrigin(req);
+  const { owner, recipients } = envelopeParties(env);
+  store.addMail(recipients.map((recipient) =>
+    voidedEmail({ recipient, envelope: env, reason, origin, actorName: req.user.name })
+  ));
+  let results = [];
+  try {
+    results = await smtp.sendVoidedEmails(activeSmtp(), {
+      envelope: env,
+      origin,
+      reason,
+      owner,
+      actorName: req.user.name,
+    });
+  } catch (err) {
+    results = [{ email: "smtp", sent: false, error: err.message }];
+  }
+  addAudit(
+    env,
+    "DocySign",
+    smtpAuditLine(results, `Emailed void notice to ${recipients.map((r) => r.email).join(", ")}`)
+  );
+}
+
 async function notifyCompleted(req, env) {
   const origin = appOrigin(req);
-  const owner = store.getUser(env.ownerId);
-  const recipients = [];
-  const seen = new Set();
-  for (const s of env.signers) {
-    const key = s.email.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    recipients.push({ name: s.name, email: s.email });
-  }
-  if (owner && owner.email && !seen.has(owner.email.toLowerCase())) {
-    recipients.push({ name: owner.name, email: owner.email });
-  }
+  const { owner, recipients } = envelopeParties(env);
   store.addMail(recipients.map((recipient) => completedEmail({ recipient, envelope: env, origin })));
   const pdfPath = env.signedFile ? path.join(UPLOADS, env.signedFile) : null;
   let results = [];
@@ -352,17 +457,86 @@ app.post("/api/auth/password", auth, (req, res) => {
   }
 });
 
+app.patch("/api/auth/profile", auth, (req, res) => {
+  try {
+    const user = store.updateProfile(req.user.id, {
+      name: req.body.name,
+      signature: req.body.signature,
+      initials: req.body.initials,
+    });
+    res.json(store.publicUser(user));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.get("/api/auth/signature", auth, (req, res) => {
+  res.json(store.getSignature(req.user.id));
+});
+
+app.get("/api/contacts", auth, (req, res) => {
+  res.json(store.listContacts(req.user.id));
+});
+
+app.post("/api/contacts", auth, (req, res) => {
+  try {
+    const contact = store.createContact(req.user.id, {
+      name: req.body.name,
+      email: req.body.email,
+      company: req.body.company,
+    });
+    res.status(201).json(contact);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.delete("/api/contacts/:id", auth, (req, res) => {
+  const ok = store.deleteContact(req.user.id, req.params.id);
+  if (!ok) return res.status(404).json({ error: "Contact not found" });
+  res.json({ ok: true });
+});
+
+app.get("/api/templates", auth, (req, res) => {
+  res.json(store.listTemplates(req.user.id).map((t) => ({
+    id: t.id,
+    title: t.title,
+    fileName: t.fileName,
+    createdAt: t.createdAt,
+    updatedAt: t.updatedAt,
+    signerCount: (t.signers || []).length,
+    fieldCount: (t.fields || []).length,
+  })));
+});
+
+app.delete("/api/templates/:id", auth, (req, res) => {
+  const ok = store.deleteTemplate(req.user.id, req.params.id);
+  if (!ok) return res.status(404).json({ error: "Template not found" });
+  res.json({ ok: true });
+});
+
 app.get("/api/envelopes", auth, (req, res) => {
-  const mine = store.listEnvelopes().filter((e) => e.ownerId === req.user.id);
+  const q = String(req.query.q || "").trim().toLowerCase();
+  const mine = store.listEnvelopes()
+    .map(expireIfNeeded)
+    .filter((e) => e.ownerId === req.user.id)
+    .filter((e) => {
+      if (!q) return true;
+      return e.title.toLowerCase().includes(q)
+        || e.fileName.toLowerCase().includes(q)
+        || e.signers.some((s) => s.name.toLowerCase().includes(q) || s.email.toLowerCase().includes(q));
+    });
   res.json(mine.map((e) => publicEnvelope(e, { includeTokens: true, viewerEmail: req.user.email })));
 });
 
 app.get("/api/inbox", auth, (req, res) => {
   const email = req.user.email;
-  const items = store.listEnvelopes().filter((e) =>
-    e.status !== "draft" &&
-    e.signers.some((s) => s.email.toLowerCase() === email)
-  );
+  const items = store.listEnvelopes()
+    .map(expireIfNeeded)
+    .filter((e) =>
+      e.status !== "draft" &&
+      e.signers.some((s) => s.email.toLowerCase() === email)
+    );
   res.json(items.map((e) => publicEnvelope(e, { viewerEmail: email })));
 });
 
@@ -370,7 +544,9 @@ app.get("/api/library", auth, (req, res) => {
   const email = req.user.email;
   const items = store.listEnvelopes().filter((e) => {
     if (e.status !== "completed") return false;
-    return e.ownerId === req.user.id || e.signers.some((s) => s.email.toLowerCase() === email);
+    return e.ownerId === req.user.id
+      || e.signers.some((s) => s.email.toLowerCase() === email)
+      || (e.cc || []).some((c) => String(c.email || "").toLowerCase() === email);
   });
   res.json(items.map((e) => publicEnvelope(e, {
     includeTokens: e.ownerId === req.user.id,
@@ -382,7 +558,9 @@ app.get("/api/stats", auth, (req, res) => {
   const email = req.user.email;
   const all = store.listEnvelopes();
   const related = all.filter((e) =>
-    e.ownerId === req.user.id || e.signers.some((s) => s.email.toLowerCase() === email)
+    e.ownerId === req.user.id
+    || e.signers.some((s) => s.email.toLowerCase() === email)
+    || (e.cc || []).some((c) => String(c.email || "").toLowerCase() === email)
   );
   const signedByMe = all.filter((e) =>
     e.signers.some((s) => s.email.toLowerCase() === email && s.status === "signed")
@@ -444,6 +622,8 @@ app.get("/api/admin/stats", auth, requireAdmin, (_req, res) => {
     sent: envelopes.filter((e) => e.status === "sent").length,
     completed: envelopes.filter((e) => e.status === "completed").length,
     declined: envelopes.filter((e) => e.status === "declined").length,
+    voided: envelopes.filter((e) => e.status === "voided").length,
+    expired: envelopes.filter((e) => e.status === "expired").length,
     pdfsSigned: signatures,
     pdfsDelivered: envelopes.filter((e) => e.status === "completed").length,
     waiting: envelopes.filter((e) => e.status === "sent").length,
@@ -544,8 +724,9 @@ app.post("/api/mail/:id/read", auth, (req, res) => {
 });
 
 app.get("/api/envelopes/:id", auth, (req, res) => {
-  const env = store.getEnvelope(req.params.id);
+  let env = store.getEnvelope(req.params.id);
   if (!env) return res.status(404).json({ error: "Envelope not found" });
+  env = expireIfNeeded(env);
   if (!canView(env, req.user)) return res.status(403).json({ error: "Not allowed" });
   res.json(publicEnvelope(env, {
     includeTokens: env.ownerId === req.user.id,
@@ -590,6 +771,13 @@ app.get("/api/envelopes/:id/download", auth, (req, res) => {
   res.download(filePath, downloadName);
 });
 
+function copyPdf(filename) {
+  const ext = path.extname(filename) || ".pdf";
+  const next = `${uuid()}${ext}`;
+  fs.copyFileSync(path.join(UPLOADS, filename), path.join(UPLOADS, next));
+  return next;
+}
+
 function newEnvelope(req, { title, file, fileName, message }) {
   const envelope = {
     id: uuid(),
@@ -599,6 +787,9 @@ function newEnvelope(req, { title, file, fileName, message }) {
     fileName,
     status: "draft",
     message: message || "",
+    signingOrder: false,
+    expiresAt: null,
+    cc: [],
     signers: [{
       id: uuid(),
       name: req.user.name,
@@ -659,6 +850,23 @@ app.post("/api/envelopes", auth, upload.single("file"), (req, res) => {
   res.status(201).json(publicEnvelope(envelope, { includeTokens: true, viewerEmail: req.user.email }));
 });
 
+const FIELD_TYPES = ["signature", "initials", "name", "date", "text", "checkbox"];
+
+function normalizeFields(fields) {
+  return fields.map((f) => ({
+    id: f.id || uuid(),
+    type: FIELD_TYPES.includes(f.type) ? f.type : "signature",
+    signerId: f.signerId,
+    page: f.page || 1,
+    x: Number(f.x) || 0,
+    y: Number(f.y) || 0,
+    w: Number(f.w) || (f.type === "checkbox" ? 4 : 22),
+    h: Number(f.h) || (f.type === "checkbox" ? 4 : 8),
+    required: f.required !== false,
+    value: "",
+  }));
+}
+
 app.put("/api/envelopes/:id", auth, (req, res) => {
   const env = store.getEnvelope(req.params.id);
   if (!env) return res.status(404).json({ error: "Envelope not found" });
@@ -666,9 +874,17 @@ app.put("/api/envelopes/:id", auth, (req, res) => {
   if (env.status !== "draft") {
     return res.status(400).json({ error: "Only draft envelopes can be edited" });
   }
-  const { title, message, signers, fields } = req.body;
+  const { title, message, signers, fields, signingOrder, expiresAt, cc } = req.body;
   if (typeof title === "string") env.title = title.trim() || env.title;
   if (typeof message === "string") env.message = message;
+  if (typeof signingOrder === "boolean") env.signingOrder = signingOrder;
+  if (expiresAt === null || expiresAt === "") env.expiresAt = null;
+  else if (typeof expiresAt === "string") {
+    const d = new Date(expiresAt);
+    if (Number.isNaN(d.getTime())) return res.status(400).json({ error: "Invalid expiration date" });
+    env.expiresAt = d.toISOString();
+  }
+  if (cc !== undefined) env.cc = normalizeCc(cc);
   if (Array.isArray(signers)) {
     env.signers = signers.map((s, i) => ({
       id: s.id || uuid(),
@@ -681,22 +897,7 @@ app.put("/api/envelopes/:id", auth, (req, res) => {
       signedAt: null,
     }));
   }
-  if (Array.isArray(fields)) {
-    env.fields = fields.map((f) => ({
-      id: f.id || uuid(),
-      type: ["signature", "initials", "name", "date", "text"].includes(f.type)
-        ? f.type
-        : "signature",
-      signerId: f.signerId,
-      page: f.page || 1,
-      x: Number(f.x) || 0,
-      y: Number(f.y) || 0,
-      w: Number(f.w) || 22,
-      h: Number(f.h) || 8,
-      required: f.required !== false,
-      value: "",
-    }));
-  }
+  if (Array.isArray(fields)) env.fields = normalizeFields(fields);
   addAudit(env, req.user.name, "Updated recipients and fields");
   store.saveEnvelope(env);
   res.json(publicEnvelope(env, { includeTokens: true, viewerEmail: req.user.email }));
@@ -715,9 +916,164 @@ app.post("/api/envelopes/:id/send", auth, async (req, res) => {
   env.status = "sent";
   env.sentAt = new Date().toISOString();
   addAudit(env, req.user.name, `Sent for signature to ${env.signers.map((s) => s.name).join(", ")}`);
-  await notifySend(req, env);
+  await notifySend(req, env, recipientsToNotify(env));
+  if ((env.cc || []).length) await notifyCc(req, env);
   store.saveEnvelope(env);
   res.json(publicEnvelope(env, { includeTokens: true, viewerEmail: req.user.email }));
+});
+
+app.post("/api/envelopes/:id/void", auth, async (req, res) => {
+  const env = store.getEnvelope(req.params.id);
+  if (!env) return res.status(404).json({ error: "Envelope not found" });
+  if (env.ownerId !== req.user.id) return res.status(403).json({ error: "Not allowed" });
+  if (env.status !== "sent") return res.status(400).json({ error: "Only in-flight envelopes can be voided" });
+  const reason = String(req.body.reason || "").trim().slice(0, 500);
+  env.status = "voided";
+  env.voidedAt = new Date().toISOString();
+  env.voidReason = reason;
+  addAudit(env, req.user.name, reason ? `Voided the envelope. Reason: ${reason}` : "Voided the envelope");
+  await notifyVoided(req, env, reason);
+  store.saveEnvelope(env);
+  res.json(publicEnvelope(env, { includeTokens: true, viewerEmail: req.user.email }));
+});
+
+app.post("/api/envelopes/:id/duplicate", auth, (req, res) => {
+  const env = store.getEnvelope(req.params.id);
+  if (!env) return res.status(404).json({ error: "Envelope not found" });
+  if (!canView(env, req.user)) return res.status(403).json({ error: "Not allowed" });
+  if (env.ownerId !== req.user.id) return res.status(403).json({ error: "Only the sender can duplicate" });
+  const copy = {
+    id: uuid(),
+    ownerId: req.user.id,
+    title: `${env.title} (copy)`,
+    file: copyPdf(env.file),
+    fileName: env.fileName,
+    status: "draft",
+    message: env.message || "",
+    signingOrder: !!env.signingOrder,
+    expiresAt: null,
+    cc: (env.cc || []).map((c) => ({ ...c, id: uuid() })),
+    signers: env.signers.map((s, i) => ({
+      id: uuid(),
+      name: s.name,
+      email: s.email,
+      role: s.role,
+      order: s.order || i + 1,
+      status: "pending",
+      token: uuid(),
+      signedAt: null,
+    })),
+    fields: [],
+    audit: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  const idMap = {};
+  env.signers.forEach((s, i) => { idMap[s.id] = copy.signers[i].id; });
+  copy.fields = (env.fields || []).map((f) => ({
+    ...f,
+    id: uuid(),
+    signerId: idMap[f.signerId] || copy.signers[0].id,
+    value: "",
+  }));
+  addAudit(copy, req.user.name, `Duplicated from “${env.title}”`);
+  store.saveEnvelope(copy);
+  res.status(201).json(publicEnvelope(copy, { includeTokens: true, viewerEmail: req.user.email }));
+});
+
+app.post("/api/envelopes/:id/template", auth, (req, res) => {
+  const env = store.getEnvelope(req.params.id);
+  if (!env) return res.status(404).json({ error: "Envelope not found" });
+  if (env.ownerId !== req.user.id) return res.status(403).json({ error: "Not allowed" });
+  const title = String(req.body.title || env.title || "Untitled template").trim();
+  const template = {
+    id: uuid(),
+    ownerId: req.user.id,
+    title,
+    file: copyPdf(env.file),
+    fileName: env.fileName,
+    message: env.message || "",
+    signingOrder: !!env.signingOrder,
+    cc: (env.cc || []).map((c) => ({ name: c.name, email: c.email })),
+    signers: env.signers.map((s, i) => ({
+      name: s.name,
+      email: s.email,
+      role: s.role,
+      order: s.order || i + 1,
+    })),
+    fields: (env.fields || []).map((f) => ({
+      type: f.type,
+      signerIndex: Math.max(0, env.signers.findIndex((s) => s.id === f.signerId)),
+      page: f.page,
+      x: f.x,
+      y: f.y,
+      w: f.w,
+      h: f.h,
+      required: f.required !== false,
+    })),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  store.saveTemplate(template);
+  res.status(201).json({
+    id: template.id,
+    title: template.title,
+    fileName: template.fileName,
+    createdAt: template.createdAt,
+    updatedAt: template.updatedAt,
+    signerCount: template.signers.length,
+    fieldCount: template.fields.length,
+  });
+});
+
+app.post("/api/templates/:id/use", auth, (req, res) => {
+  const tpl = store.getTemplate(req.params.id);
+  if (!tpl || tpl.ownerId !== req.user.id) return res.status(404).json({ error: "Template not found" });
+  const envelope = newEnvelope(req, {
+    title: tpl.title,
+    file: copyPdf(tpl.file),
+    fileName: tpl.fileName,
+    message: tpl.message,
+  });
+  envelope.signingOrder = !!tpl.signingOrder;
+  envelope.cc = (tpl.cc || []).map((c) => ({ id: uuid(), name: c.name, email: c.email }));
+  envelope.signers = (tpl.signers || []).map((s, i) => ({
+    id: uuid(),
+    name: s.name,
+    email: s.email,
+    role: s.role === "approver" ? "approver" : "signer",
+    order: s.order || i + 1,
+    status: "pending",
+    token: uuid(),
+    signedAt: null,
+  }));
+  if (!envelope.signers.length) {
+    envelope.signers = [{
+      id: uuid(),
+      name: req.user.name,
+      email: req.user.email,
+      role: "signer",
+      order: 1,
+      status: "pending",
+      token: uuid(),
+      signedAt: null,
+    }];
+  }
+  envelope.fields = (tpl.fields || []).map((f) => ({
+    id: uuid(),
+    type: FIELD_TYPES.includes(f.type) ? f.type : "signature",
+    signerId: envelope.signers[Math.min(f.signerIndex || 0, envelope.signers.length - 1)].id,
+    page: f.page || 1,
+    x: Number(f.x) || 0,
+    y: Number(f.y) || 0,
+    w: Number(f.w) || 22,
+    h: Number(f.h) || 8,
+    required: f.required !== false,
+    value: "",
+  }));
+  addAudit(envelope, req.user.name, `Started envelope from template “${tpl.title}”`);
+  store.saveEnvelope(envelope);
+  res.status(201).json(publicEnvelope(envelope, { includeTokens: true, viewerEmail: req.user.email }));
 });
 
 app.delete("/api/envelopes/:id", auth, (req, res) => {
@@ -731,24 +1087,32 @@ app.delete("/api/envelopes/:id", auth, (req, res) => {
 app.get("/api/sign/:token", (req, res) => {
   const found = store.getByToken(req.params.token);
   if (!found) return res.status(404).json({ error: "Signing link is invalid" });
-  const { envelope, signer } = found;
+  const envelope = expireIfNeeded(found.envelope);
+  const signer = found.signer;
   if (envelope.status === "draft") {
     return res.status(400).json({ error: "This envelope has not been sent yet" });
   }
+  const turn = currentSigner(envelope);
+  const waitingOnPrior = !!(envelope.signingOrder && envelope.status === "sent" && turn && turn.id !== signer.id && signer.status === "pending");
   res.json({
     envelopeId: envelope.id,
     title: envelope.title,
     message: envelope.message,
     status: envelope.status,
     fileName: envelope.fileName,
+    signingOrder: !!envelope.signingOrder,
+    waitingOnPrior,
+    currentSigner: turn ? { id: turn.id, name: turn.name } : null,
+    expiresAt: envelope.expiresAt || null,
     hasAccount: !!store.getUserByEmail(signer.email),
     declineReason: envelope.declineReason || "",
+    voidReason: envelope.voidReason || "",
     signer: {
       id: signer.id,
       name: signer.name,
       email: signer.email,
       role: signer.role,
-      status: signer.status,
+      status: waitingOnPrior ? "waiting" : signer.status,
       signedAt: signer.signedAt,
     },
     fields: envelope.fields.filter((f) => f.signerId === signer.id),
@@ -784,9 +1148,16 @@ app.post("/api/envelopes/:id/remind", auth, async (req, res) => {
   const env = store.getEnvelope(req.params.id);
   if (!env) return res.status(404).json({ error: "Envelope not found" });
   if (env.ownerId !== req.user.id) return res.status(403).json({ error: "Not allowed" });
+  expireIfNeeded(env);
   if (env.status !== "sent") return res.status(400).json({ error: "Reminders are only for envelopes still waiting on signatures" });
   const signerId = req.body.signerId ? String(req.body.signerId) : "";
-  const pending = env.signers.filter((s) => s.status === "pending" && (!signerId || s.id === signerId));
+  const turn = currentSigner(env);
+  const pending = env.signers.filter((s) => {
+    if (s.status !== "pending") return false;
+    if (signerId && s.id !== signerId) return false;
+    if (env.signingOrder && turn && s.id !== turn.id) return false;
+    return true;
+  });
   if (!pending.length) return res.status(400).json({ error: "No pending recipients to remind" });
   const now = new Date().toISOString();
   env.lastRemindedAt = now;
@@ -815,6 +1186,13 @@ app.post("/api/sign/:token/decline", async (req, res) => {
   }
   if (signer.status === "declined") {
     return res.status(400).json({ error: "You already declined this document" });
+  }
+  expireIfNeeded(envelope);
+  if (envelope.status === "expired") {
+    return res.status(400).json({ error: "This envelope has expired" });
+  }
+  if (envelope.status === "voided") {
+    return res.status(400).json({ error: "This envelope was voided" });
   }
   const reason = String(req.body.reason || "").trim().slice(0, 500);
   const now = new Date().toISOString();
@@ -852,10 +1230,29 @@ app.post("/api/sign/:token", async (req, res) => {
   if (signer.status === "declined") {
     return res.status(400).json({ error: "You declined this document" });
   }
+  expireIfNeeded(envelope);
+  if (envelope.status === "expired") {
+    return res.status(400).json({ error: "This envelope has expired" });
+  }
+  if (envelope.status === "voided") {
+    return res.status(400).json({ error: "This envelope was voided" });
+  }
+  const turn = currentSigner(envelope);
+  if (envelope.signingOrder && turn && turn.id !== signer.id) {
+    return res.status(400).json({ error: `It is ${turn.name}'s turn to sign first` });
+  }
 
   const values = req.body.values || {};
   const myFields = envelope.fields.filter((f) => f.signerId === signer.id);
   for (const field of myFields) {
+    if (field.type === "checkbox") {
+      const on = values[field.id] === true || values[field.id] === "true" || values[field.id] === "Yes";
+      if (field.required && !on) {
+        return res.status(400).json({ error: "A required checkbox is unchecked" });
+      }
+      field.value = on ? "Yes" : "No";
+      continue;
+    }
     if (field.required && !values[field.id]) {
       return res.status(400).json({ error: `Missing required field: ${field.type}` });
     }
@@ -889,6 +1286,11 @@ app.post("/api/sign/:token", async (req, res) => {
       signer.signedAt = null;
       store.saveEnvelope(envelope);
       return res.status(500).json({ error: "Failed to stamp PDF: " + err.message });
+    }
+  } else if (envelope.signingOrder) {
+    const next = currentSigner(envelope);
+    if (next) {
+      await notifySend(req, envelope, [next]);
     }
   }
 

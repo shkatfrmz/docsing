@@ -22,6 +22,7 @@ export default function Sign() {
   const [busy, setBusy] = useState(false);
   const [showDecline, setShowDecline] = useState(false);
   const [reason, setReason] = useState("");
+  const [savedSig, setSavedSig] = useState({ signature: "", initials: "" });
 
   useEffect(() => {
     api.signInfo(token)
@@ -32,12 +33,13 @@ export default function Sign() {
           setDone(true);
           setCompleted(data.status === "completed");
         }
-        if (data.signer.status === "declined" || data.status === "declined") {
+        if (data.signer.status === "declined" || data.status === "declined" || data.status === "voided") {
           setDeclined(true);
         }
       })
       .catch((e) => setError(e.message));
-  }, [token]);
+    if (user) api.signature().then(setSavedSig).catch(() => {});
+  }, [token, user]);
 
   const fields = useMemo(() => {
     if (!info) return [];
@@ -63,10 +65,17 @@ export default function Sign() {
 
   function saveField() {
     if (!active) return;
-    if (active.type === "signature" || active.type === "initials") {
-      const img = mode === "type" ? typedSignature(typed || info.signer.name) : draw;
+    if (active.type === "checkbox") {
+      applyValue("Yes");
+    } else if (active.type === "signature" || active.type === "initials") {
+      const saved = active.type === "initials" ? savedSig.initials : savedSig.signature;
+      const img = mode === "saved" && saved
+        ? saved
+        : mode === "type"
+          ? typedSignature(typed || info.signer.name)
+          : draw;
       if (!img) {
-        setError("Draw or type a signature first");
+        setError("Draw, type, or use your saved signature first");
         return;
       }
       applyValue(img);
@@ -160,7 +169,7 @@ export default function Sign() {
             <h1 className="serif">{info.title}</h1>
             {info.message && <p>{info.message}</p>}
           </div>
-          {!done && !declined && (
+          {!done && !declined && !info.waitingOnPrior && info.status === "sent" && (
             <div className="row" style={{ flexWrap: "wrap" }}>
               <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setShowDecline(true)}>
                 Decline
@@ -172,6 +181,30 @@ export default function Sign() {
           )}
         </div>
         {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
+        {info.status === "expired" && (
+          <div className="card" style={{ marginBottom: 16 }}>
+            <h3>This envelope expired</h3>
+            <p className="meta">The signing window closed. Ask the sender to send a new copy if you still need to sign.</p>
+          </div>
+        )}
+        {info.status === "voided" && (
+          <div className="card" style={{ marginBottom: 16 }}>
+            <h3>This envelope was voided</h3>
+            <p className="meta">
+              The sender closed “{info.title}”.
+              {info.voidReason ? ` Reason: ${info.voidReason}` : ""}
+            </p>
+          </div>
+        )}
+        {info.waitingOnPrior && info.status === "sent" && (
+          <div className="card" style={{ marginBottom: 16 }}>
+            <h3>Not your turn yet</h3>
+            <p className="meta">
+              This envelope is signed in order. {info.currentSigner ? `${info.currentSigner.name} signs first.` : "A prior recipient still needs to sign."}
+              You will get an email when it is your turn.
+            </p>
+          </div>
+        )}
         {declined && (
           <div className="card" style={{ marginBottom: 16 }}>
             <h3>{info.signer.status === "declined" ? "You declined this document" : "This envelope was declined"}</h3>
@@ -228,12 +261,19 @@ export default function Sign() {
                 key={f.id}
                 className="field-chip"
                 onClick={() => {
+                  if (info.waitingOnPrior) return;
+                  if (f.type === "checkbox") {
+                    setValues((prev) => ({ ...prev, [f.id]: prev[f.id] === "Yes" ? "" : "Yes" }));
+                    return;
+                  }
                   setActive(f);
                   setError("");
                   if (f.type === "date") setTyped(new Date().toLocaleDateString());
                   if (f.type === "name") setTyped(info.signer.name);
+                  const saved = f.type === "initials" ? savedSig.initials : savedSig.signature;
+                  if ((f.type === "signature" || f.type === "initials") && saved) setMode("saved");
                 }}
-                disabled={done || declined}
+                disabled={done || declined || info.waitingOnPrior}
               >
                 <span>{f.type}</span>
                 <span>{values[f.id] ? "Filled" : "Required"}</span>
@@ -251,8 +291,18 @@ export default function Sign() {
             src={`/api/sign/${token}/file`}
             fields={fields}
             activeId={active?.id}
-            onSelect={(f) => !done && !declined && setActive(f)}
+            onSelect={(f) => {
+              if (done || declined || info.waitingOnPrior) return;
+              if (f.type === "checkbox") {
+                setValues((prev) => ({ ...prev, [f.id]: prev[f.id] === "Yes" ? "" : "Yes" }));
+                return;
+              }
+              setActive(f);
+            }}
             renderValue={(f) => {
+              if (f.type === "checkbox") {
+                return f.value === "Yes" ? "X" : "";
+              }
               if (f.value && f.value.startsWith("data:image")) {
                 return <img src={f.value} alt="" style={{ width: "100%", height: "100%", objectFit: "contain" }} />;
               }
@@ -262,7 +312,7 @@ export default function Sign() {
         </div>
       </div>
 
-      {active && !done && !declined && (
+      {active && !done && !declined && !info.waitingOnPrior && (
         <div className="modal-back" onClick={() => setActive(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="kicker">Fill field</div>
@@ -270,10 +320,19 @@ export default function Sign() {
             {(active.type === "signature" || active.type === "initials") && (
               <>
                 <div className="row" style={{ marginBottom: 10 }}>
+                  {(active.type === "signature" ? savedSig.signature : savedSig.initials) && (
+                    <button type="button" className={`btn btn-sm ${mode === "saved" ? "btn-primary" : "btn-ghost"}`} onClick={() => setMode("saved")}>Saved</button>
+                  )}
                   <button type="button" className={`btn btn-sm ${mode === "draw" ? "btn-primary" : "btn-ghost"}`} onClick={() => setMode("draw")}>Draw</button>
                   <button type="button" className={`btn btn-sm ${mode === "type" ? "btn-primary" : "btn-ghost"}`} onClick={() => setMode("type")}>Type</button>
                 </div>
-                {mode === "draw" ? (
+                {mode === "saved" ? (
+                  <img
+                    src={active.type === "initials" ? savedSig.initials : savedSig.signature}
+                    alt="Saved signature"
+                    style={{ width: "100%", maxHeight: 120, objectFit: "contain", background: "#fff", borderRadius: 8 }}
+                  />
+                ) : mode === "draw" ? (
                   <SignaturePad onChange={setDraw} />
                 ) : (
                   <input className="input" value={typed} onChange={(e) => setTyped(e.target.value)} />

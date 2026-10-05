@@ -7,8 +7,15 @@ DocySign is a DocuSign-style web app for sending PDF documents out for electroni
 - Sign up, log in, and log out
 - Upload a PDF or start from a sample NDA
 - Add recipients (needs to sign / needs to approve)
-- Place, move, and delete fields: signature, initials, full name, date, text
-- Draw or type a signature
+- Sequential signing order or send to everyone at once
+- Optional expiration date and carbon-copy (CC) recipients
+- Place, move, and delete fields: signature, initials, full name, date, text, checkbox
+- Draw, type, or reuse a saved signature
+- Address book of contacts for quick recipient add
+- Save envelopes as templates and start new ones from them
+- Duplicate any envelope as a new draft
+- Void an in-flight envelope and notify every party
+- Search sent, inbox, and completed documents
 - Real SMTP email (Gmail or Postfix) plus an in-app mailbox
 - Signing-request emails with a link to open DocySign and sign
 - Completion emails with the final signed PDF attached
@@ -95,6 +102,7 @@ Use two accounts with different emails to demo the full loop (sender and signer)
 | `/signup` `/login` | Accounts |
 | `/app` | Workspace (Sent, To sign, Completed) |
 | `/mail` | In-app mailbox |
+| `/contacts` | Address book |
 | `/settings` | SMTP (Gmail or Postfix) |
 | `/prepare/:id` | Place fields and send |
 | `/envelope/:id` | Envelope status and audit trail |
@@ -107,6 +115,9 @@ The backend listens on port 3001.
 
 - `POST /api/auth/signup` `POST /api/auth/login` `GET /api/auth/me`
 - `GET/POST /api/envelopes` `PUT /api/envelopes/:id` `POST /api/envelopes/:id/send`
+- `POST /api/envelopes/:id/remind` `POST /api/envelopes/:id/void` `POST /api/envelopes/:id/duplicate`
+- `POST /api/envelopes/:id/template` `GET/DELETE /api/templates` `POST /api/templates/:id/use`
+- `GET/POST /api/contacts` `PATCH /api/auth/profile`
 - `GET /api/inbox` `GET /api/library` `GET /api/stats` `GET /api/mail`
 - `GET/PUT /api/settings/smtp` `POST /api/settings/smtp/test`
 - `GET/POST /api/sign/:token`

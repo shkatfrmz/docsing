@@ -1,15 +1,78 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api.js";
 import { useAuth } from "../auth.jsx";
+import SignaturePad from "../components/SignaturePad.jsx";
 
 export default function Account() {
-  const { user } = useAuth();
+  const { user, setUser } = useAuth();
+  const [name, setName] = useState(user.name);
   const [currentPassword, setCurrentPassword] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [ok, setOk] = useState("");
+  const [saved, setSaved] = useState({ signature: "", initials: "" });
+  const [draw, setDraw] = useState("");
+  const [drawKind, setDrawKind] = useState("signature");
+
+  useEffect(() => {
+    api.signature().then(setSaved).catch(() => {});
+  }, []);
+
+  async function saveName(e) {
+    e.preventDefault();
+    setBusy(true);
+    setError("");
+    setOk("");
+    try {
+      const next = await api.updateProfile({ name });
+      setUser(next);
+      setOk("Name updated.");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveMark(kind) {
+    if (!draw) {
+      setError("Draw a mark first");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    setOk("");
+    try {
+      const patch = kind === "initials" ? { initials: draw } : { signature: draw };
+      const next = await api.updateProfile(patch);
+      setUser(next);
+      setSaved(await api.signature());
+      setDraw("");
+      setOk(kind === "initials" ? "Initials saved." : "Signature saved.");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function clearMark(kind) {
+    setBusy(true);
+    setError("");
+    try {
+      const patch = kind === "initials" ? { initials: "" } : { signature: "" };
+      const next = await api.updateProfile(patch);
+      setUser(next);
+      setSaved(await api.signature());
+      setOk("Cleared.");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function submit(e) {
     e.preventDefault();
@@ -39,17 +102,49 @@ export default function Account() {
         <div>
           <div className="kicker">Workspace</div>
           <h1 className="serif">Account</h1>
-          <p>Your name and email are stored locally. The password is hashed — DocySign never keeps the plaintext.</p>
+          <p>Update your name, save a signature for reuse, and change your password.</p>
         </div>
       </div>
 
+      {error && <div className="error">{error}</div>}
+      {ok && <div className="ok">{ok}</div>}
+
       <div className="card settings-card">
         <h3 className="serif" style={{ marginTop: 0 }}>Profile</h3>
-        <p><strong>{user.name}</strong></p>
-        <p className="meta">{user.email}</p>
-        <p className="meta" style={{ marginTop: 8 }}>
-          Role: {user.role === "admin" ? "Admin" : "User"}
-        </p>
+        <form onSubmit={saveName}>
+          <label className="label">Full name</label>
+          <input className="input" value={name} onChange={(e) => setName(e.target.value)} required />
+          <p className="meta" style={{ marginTop: 10 }}>{user.email}</p>
+          <p className="meta">Role: {user.role === "admin" ? "Admin" : "User"}</p>
+          <button className="btn btn-primary" type="submit" disabled={busy} style={{ marginTop: 14 }}>
+            Save name
+          </button>
+        </form>
+      </div>
+
+      <div className="card settings-card" style={{ marginTop: 16 }}>
+        <h3 className="serif" style={{ marginTop: 0 }}>Saved signature</h3>
+        <p className="meta">Adopt this mark on any envelope instead of drawing each time.</p>
+        <div className="row" style={{ margin: "12px 0" }}>
+          <button type="button" className={`btn btn-sm ${drawKind === "signature" ? "btn-primary" : "btn-ghost"}`} onClick={() => setDrawKind("signature")}>Signature</button>
+          <button type="button" className={`btn btn-sm ${drawKind === "initials" ? "btn-primary" : "btn-ghost"}`} onClick={() => setDrawKind("initials")}>Initials</button>
+        </div>
+        {(drawKind === "signature" ? saved.signature : saved.initials) && (
+          <img
+            src={drawKind === "signature" ? saved.signature : saved.initials}
+            alt=""
+            style={{ width: "100%", maxHeight: 100, objectFit: "contain", background: "#fff", borderRadius: 8, marginBottom: 12 }}
+          />
+        )}
+        <SignaturePad onChange={setDraw} />
+        <div className="row" style={{ marginTop: 12 }}>
+          <button type="button" className="btn btn-gold" disabled={busy} onClick={() => saveMark(drawKind)}>
+            Save {drawKind}
+          </button>
+          <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => clearMark(drawKind)}>
+            Clear saved
+          </button>
+        </div>
       </div>
 
       <div className="card settings-card" style={{ marginTop: 16 }}>
@@ -84,8 +179,6 @@ export default function Account() {
             required
             autoComplete="new-password"
           />
-          {error && <div className="error">{error}</div>}
-          {ok && <div className="ok">{ok}</div>}
           <button className="btn btn-primary" type="submit" disabled={busy} style={{ marginTop: 18 }}>
             {busy ? "Saving…" : "Update password"}
           </button>

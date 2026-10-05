@@ -10,11 +10,15 @@ const FOLDERS = [
   { id: "reminder", label: "Reminders" },
   { id: "completed", label: "Completed" },
   { id: "declined", label: "Declined" },
+  { id: "voided", label: "Voided" },
+  { id: "cc", label: "Copied" },
 ];
 
 function typeMeta(type) {
   if (type === "completed") return { label: "Completed", badge: "badge-completed" };
   if (type === "declined") return { label: "Declined", badge: "badge-declined" };
+  if (type === "voided") return { label: "Voided", badge: "badge-declined" };
+  if (type === "cc") return { label: "Copied", badge: "badge-draft" };
   if (type === "reminder") return { label: "Reminder", badge: "badge-pending" };
   return { label: "To sign", badge: "badge-sent" };
 }
@@ -84,7 +88,7 @@ export default function Mail() {
   }
 
   const counts = useMemo(() => {
-    const next = { all: list.length, unread: 0, request: 0, reminder: 0, completed: 0, declined: 0 };
+    const next = { all: list.length, unread: 0, request: 0, reminder: 0, completed: 0, declined: 0, voided: 0, cc: 0 };
     for (const m of list) {
       if (!m.read) next.unread += 1;
       if (next[m.type] != null) next[m.type] += 1;

@@ -67,6 +67,27 @@ async function stampEnvelope(envelope, originalPath, outputPath) {
         width: dw,
         height: dh,
       });
+    } else if (field.type === "checkbox") {
+      const on = String(field.value).toLowerCase() === "yes" || field.value === true;
+      page.drawRectangle({
+        x,
+        y,
+        width: Math.min(w, h),
+        height: Math.min(w, h),
+        borderColor: rgb(0.08, 0.12, 0.22),
+        borderWidth: 1.2,
+        color: rgb(1, 1, 1),
+      });
+      if (on) {
+        const size = Math.max(8, Math.min(w, h) * 0.75);
+        page.drawText("X", {
+          x: x + Math.min(w, h) * 0.22,
+          y: y + Math.min(w, h) * 0.18,
+          size,
+          font: fontBold,
+          color: rgb(0.08, 0.12, 0.22),
+        });
+      }
     } else {
       const text = String(field.value || "");
       const size = Math.max(8, Math.min(14, h * 0.55));

@@ -43,6 +43,24 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
+  updateProfile: (body) =>
+    request("/api/auth/profile", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  signature: () => request("/api/auth/signature"),
+  contacts: () => request("/api/contacts"),
+  addContact: (body) =>
+    request("/api/contacts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  deleteContact: (id) => request(`/api/contacts/${id}`, { method: "DELETE" }),
+  templates: () => request("/api/templates"),
+  useTemplate: (id) => request(`/api/templates/${id}/use`, { method: "POST" }),
+  deleteTemplate: (id) => request(`/api/templates/${id}`, { method: "DELETE" }),
   list: () => request("/api/envelopes"),
   inbox: () => request("/api/inbox"),
   library: () => request("/api/library"),
@@ -87,6 +105,19 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ origin: window.location.origin, signerId }),
+    }),
+  voidEnvelope: (id, reason) =>
+    request(`/api/envelopes/${id}/void`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason, origin: window.location.origin }),
+    }),
+  duplicate: (id) => request(`/api/envelopes/${id}/duplicate`, { method: "POST" }),
+  saveTemplate: (id, title) =>
+    request(`/api/envelopes/${id}/template`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
     }),
   remove: (id) => request(`/api/envelopes/${id}`, { method: "DELETE" }),
   signInfo: (token) => request(`/api/sign/${token}`),

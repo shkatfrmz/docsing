@@ -6,7 +6,8 @@ import PdfViewer from "../components/PdfViewer.jsx";
 
 function badgeClass(status) {
   if (status === "completed" || status === "signed") return "badge badge-completed";
-  if (status === "declined") return "badge badge-declined";
+  if (status === "declined" || status === "voided") return "badge badge-declined";
+  if (status === "expired" || status === "waiting") return "badge badge-expired";
   if (status === "sent" || status === "pending") return "badge badge-sent";
   return "badge badge-draft";
 }
@@ -20,6 +21,8 @@ export default function Envelope() {
   const [copied, setCopied] = useState("");
   const [busy, setBusy] = useState(false);
   const [ok, setOk] = useState("");
+  const [showVoid, setShowVoid] = useState(false);
+  const [voidReason, setVoidReason] = useState("");
 
   useEffect(() => {
     api.get(id).then(setEnv).catch((e) => setError(e.message));
@@ -39,6 +42,49 @@ export default function Envelope() {
     if (!window.confirm("Delete this envelope?")) return;
     await api.remove(id);
     nav("/app");
+  }
+
+  async function duplicate() {
+    setBusy(true);
+    setError("");
+    try {
+      const copy = await api.duplicate(id);
+      nav(`/prepare/${copy.id}`);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveTemplate() {
+    setBusy(true);
+    setError("");
+    setOk("");
+    try {
+      await api.saveTemplate(id, env.title);
+      setOk("Saved as a template. Use it from the Templates tab in Workspace.");
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function voidEnvelope() {
+    setBusy(true);
+    setError("");
+    setOk("");
+    try {
+      const next = await api.voidEnvelope(id, voidReason);
+      setEnv(next);
+      setShowVoid(false);
+      setOk("Envelope voided. Every party was notified.");
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function remind(signerId) {
@@ -88,10 +134,21 @@ export default function Envelope() {
           <span className={badgeClass(env.status)}>{env.status}</span>
           <Link className="btn btn-ghost" to={`/preview/${id}`}>Preview / Print</Link>
           <a className="btn btn-primary" href={downloadHref}>Download PDF</a>
-          {env.status === "sent" && env.signers.some((s) => s.status === "pending") && (
+          {env.status === "sent" && env.signers.some((s) => s.status === "pending" || s.status === "waiting") && (
             <button type="button" className="btn btn-gold" disabled={busy} onClick={() => remind()}>
-              {busy ? "Sending…" : "Remind all pending"}
+              {busy ? "Sending…" : env.signingOrder ? "Remind current signer" : "Remind all pending"}
             </button>
+          )}
+          {env.status === "sent" && env.ownerId === user.id && (
+            <button type="button" className="btn btn-danger btn-sm" disabled={busy} onClick={() => setShowVoid(true)}>
+              Void
+            </button>
+          )}
+          {env.ownerId === user.id && (
+            <>
+              <button type="button" className="btn btn-ghost" disabled={busy} onClick={duplicate}>Duplicate</button>
+              <button type="button" className="btn btn-ghost" disabled={busy} onClick={saveTemplate}>Save as template</button>
+            </>
           )}
           {env.status === "draft" && <Link className="btn btn-ghost" to={`/prepare/${id}`}>Edit</Link>}
           <button type="button" className="btn btn-danger btn-sm" onClick={remove}>Delete</button>
@@ -132,10 +189,30 @@ export default function Envelope() {
             {copied && <div className="ok">Copied: {copied}</div>}
             {ok && <div className="ok">{ok}</div>}
             {error && <div className="error">{error}</div>}
+            {(env.cc || []).length > 0 && (
+              <>
+                <h3 style={{ marginTop: 16 }}>Copied</h3>
+                {env.cc.map((c) => (
+                  <div key={c.id} className="meta" style={{ marginBottom: 4 }}>{c.name} · {c.email}</div>
+                ))}
+              </>
+            )}
+            {env.signingOrder && <p className="meta" style={{ marginTop: 8 }}>Sequential routing is on. Each person is emailed when it is their turn.</p>}
+            {env.expiresAt && env.status === "sent" && (
+              <p className="meta" style={{ marginTop: 8 }}>Expires {new Date(env.expiresAt).toLocaleString()}</p>
+            )}
             {env.status === "declined" && (
               <p className="meta" style={{ marginTop: 8 }}>
                 This envelope was declined{env.declineReason ? `: ${env.declineReason}` : "."}
               </p>
+            )}
+            {env.status === "voided" && (
+              <p className="meta" style={{ marginTop: 8 }}>
+                This envelope was voided{env.voidReason ? `: ${env.voidReason}` : "."}
+              </p>
+            )}
+            {env.status === "expired" && (
+              <p className="meta" style={{ marginTop: 8 }}>This envelope expired and is closed.</p>
             )}
             <p className="hint">
               Recipients receive an email with a signing link. Remind pending people from here. When everyone signs, the final PDF is emailed and added to Completed.
@@ -164,6 +241,30 @@ export default function Envelope() {
           renderValue={(f) => (f.value && !f.value.startsWith("data:") ? f.value : f.type)}
         />
       </div>
+
+      {showVoid && (
+        <div className="modal-back" onClick={() => setShowVoid(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="kicker">Void envelope</div>
+            <h2 className="serif" style={{ margin: "6px 0 14px" }}>Close “{env.title}”?</h2>
+            <p className="meta">Everyone on the envelope will be emailed. No further signatures will be collected.</p>
+            <label className="label">Reason (optional)</label>
+            <textarea
+              className="input"
+              rows={3}
+              value={voidReason}
+              onChange={(e) => setVoidReason(e.target.value)}
+              placeholder="Wrong document, terms changed…"
+            />
+            <div className="row" style={{ marginTop: 16, justifyContent: "flex-end" }}>
+              <button type="button" className="btn btn-ghost" onClick={() => setShowVoid(false)}>Keep open</button>
+              <button type="button" className="btn btn-danger" disabled={busy} onClick={voidEnvelope}>
+                {busy ? "Voiding…" : "Void and notify"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

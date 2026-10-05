@@ -5,7 +5,8 @@ import Settings from "./Settings.jsx";
 
 function badgeClass(status) {
   if (status === "completed") return "badge badge-completed";
-  if (status === "declined") return "badge badge-declined";
+  if (status === "declined" || status === "voided") return "badge badge-declined";
+  if (status === "expired") return "badge badge-expired";
   if (status === "sent") return "badge badge-sent";
   if (status === "admin") return "badge badge-sent";
   return "badge badge-draft";
@@ -104,7 +105,8 @@ export default function Admin() {
         { label: "PDFs signed", value: stats.pdfsSigned, hint: "Individual signatures" },
         { label: "PDFs delivered", value: stats.pdfsDelivered, hint: "Completed envelopes" },
         { label: "Waiting", value: stats.waiting, hint: "Out for signature" },
-        { label: "Declined", value: stats.declined, hint: "Voided envelopes" },
+        { label: "Declined", value: stats.declined, hint: "Signer declined" },
+        { label: "Voided / expired", value: (stats.voided || 0) + (stats.expired || 0), hint: `${stats.voided || 0} voided · ${stats.expired || 0} expired` },
         { label: "Mail sent", value: stats.mailSent, hint: stats.smtpReady ? "SMTP ready" : "SMTP not configured" },
       ]
     : [];
@@ -154,7 +156,7 @@ export default function Admin() {
           <div className="card" style={{ marginTop: 20 }}>
             <h3 className="serif" style={{ marginTop: 0 }}>Product snapshot</h3>
             <p className="meta">
-              {stats ? `${stats.envelopes} envelopes · ${stats.drafts} drafts · ${stats.sent} in flight · ${stats.completed} completed` : "Loading…"}
+              {stats ? `${stats.envelopes} envelopes · ${stats.drafts} drafts · ${stats.sent} in flight · ${stats.completed} completed · ${stats.voided || 0} voided · ${stats.expired || 0} expired` : "Loading…"}
             </p>
           </div>
         </>

@@ -85,4 +85,46 @@ function declinedEmail({ recipient, envelope, signer, reason, origin }) {
   };
 }
 
-module.exports = { requestEmail, completedEmail, reminderEmail, declinedEmail };
+function voidedEmail({ recipient, envelope, reason, origin, actorName }) {
+  const link = `${origin}/envelope/${envelope.id}`;
+  return {
+    id: uuid(),
+    to: recipient.email.toLowerCase(),
+    toName: recipient.name,
+    fromName: "DocySign",
+    fromEmail: "docs@docysign.app",
+    subject: `Voided: “${envelope.title}” is no longer open for signature`,
+    preview: `${actorName} voided ${envelope.title}.`,
+    body: `${actorName} voided “${envelope.title}”.${reason ? ` Reason: ${reason}` : ""} The envelope is closed and no further signatures will be collected.`,
+    type: "voided",
+    envelopeId: envelope.id,
+    envelopeTitle: envelope.title,
+    signToken: null,
+    link,
+    createdAt: new Date().toISOString(),
+    read: false,
+  };
+}
+
+function ccEmail({ recipient, envelope, origin }) {
+  const link = `${origin}/envelope/${envelope.id}`;
+  return {
+    id: uuid(),
+    to: recipient.email.toLowerCase(),
+    toName: recipient.name,
+    fromName: "DocySign",
+    fromEmail: "docs@docysign.app",
+    subject: `Copied: “${envelope.title}” was sent for signature`,
+    preview: `You were copied on ${envelope.title}.`,
+    body: `You were copied on “${envelope.title}”. You do not need to sign. You will also receive the completed PDF when everyone has signed.`,
+    type: "cc",
+    envelopeId: envelope.id,
+    envelopeTitle: envelope.title,
+    signToken: null,
+    link,
+    createdAt: new Date().toISOString(),
+    read: false,
+  };
+}
+
+module.exports = { requestEmail, completedEmail, reminderEmail, declinedEmail, voidedEmail, ccEmail };

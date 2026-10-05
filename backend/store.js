@@ -6,7 +6,7 @@ const DATA_DIR = path.join(__dirname, "data");
 const STORE_FILE = path.join(DATA_DIR, "db.json");
 
 function empty() {
-  return { users: [], sessions: [], envelopes: [], mail: [], smtp: null };
+  return { users: [], sessions: [], envelopes: [], mail: [], smtp: null, contacts: [], templates: [] };
 }
 
 function ensureDir() {
@@ -25,6 +25,8 @@ function read() {
     data.envelopes = data.envelopes || [];
     data.mail = data.mail || [];
     data.smtp = data.smtp || null;
+    data.contacts = data.contacts || [];
+    data.templates = data.templates || [];
     let changed = false;
     data.users.forEach((u) => {
       if (!u.role) {
@@ -59,6 +61,8 @@ function publicUser(user) {
     email: user.email,
     role: user.role === "admin" ? "admin" : "user",
     createdAt: user.createdAt,
+    hasSignature: !!(user.signature && String(user.signature).startsWith("data:image")),
+    hasInitials: !!(user.initials && String(user.initials).startsWith("data:image")),
   };
 }
 
@@ -182,6 +186,50 @@ function changePassword(id, currentPassword, nextPassword) {
   return setPassword(id, nextPassword);
 }
 
+function updateProfile(id, patch) {
+  const data = read();
+  const user = data.users.find((u) => u.id === id);
+  if (!user) return null;
+  if (typeof patch.name === "string") {
+    const name = patch.name.trim();
+    if (name.length < 2) {
+      const err = new Error("Enter your full name");
+      err.status = 400;
+      throw err;
+    }
+    user.name = name;
+  }
+  if (patch.signature !== undefined) {
+    const val = String(patch.signature || "");
+    if (val && !val.startsWith("data:image")) {
+      const err = new Error("Signature must be a drawn image");
+      err.status = 400;
+      throw err;
+    }
+    user.signature = val;
+  }
+  if (patch.initials !== undefined) {
+    const val = String(patch.initials || "");
+    if (val && !val.startsWith("data:image")) {
+      const err = new Error("Initials must be a drawn image");
+      err.status = 400;
+      throw err;
+    }
+    user.initials = val;
+  }
+  write(data);
+  return user;
+}
+
+function getSignature(id) {
+  const user = getUser(id);
+  if (!user) return { signature: "", initials: "" };
+  return {
+    signature: user.signature || "",
+    initials: user.initials || "",
+  };
+}
+
 function createSession(userId) {
   const data = read();
   const session = {
@@ -289,6 +337,78 @@ function saveSmtp(settings) {
   return data.smtp;
 }
 
+function listContacts(userId) {
+  return read()
+    .contacts.filter((c) => c.ownerId === userId)
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function createContact(userId, { name, email, company }) {
+  const data = read();
+  const key = String(email || "").trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(key)) {
+    const err = new Error("Enter a valid email");
+    err.status = 400;
+    throw err;
+  }
+  const existing = data.contacts.find((c) => c.ownerId === userId && c.email === key);
+  if (existing) {
+    existing.name = String(name || existing.name).trim() || existing.name;
+    existing.company = String(company || existing.company || "").trim();
+    write(data);
+    return existing;
+  }
+  const contact = {
+    id: crypto.randomUUID(),
+    ownerId: userId,
+    name: String(name || "").trim() || key,
+    email: key,
+    company: String(company || "").trim(),
+    createdAt: new Date().toISOString(),
+  };
+  data.contacts.push(contact);
+  write(data);
+  return contact;
+}
+
+function deleteContact(userId, id) {
+  const data = read();
+  const before = data.contacts.length;
+  data.contacts = data.contacts.filter((c) => !(c.id === id && c.ownerId === userId));
+  if (data.contacts.length === before) return false;
+  write(data);
+  return true;
+}
+
+function listTemplates(userId) {
+  return read()
+    .templates.filter((t) => t.ownerId === userId)
+    .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+}
+
+function getTemplate(id) {
+  return read().templates.find((t) => t.id === id) || null;
+}
+
+function saveTemplate(template) {
+  const data = read();
+  const idx = data.templates.findIndex((t) => t.id === template.id);
+  template.updatedAt = new Date().toISOString();
+  if (idx >= 0) data.templates[idx] = template;
+  else data.templates.push(template);
+  write(data);
+  return template;
+}
+
+function deleteTemplate(userId, id) {
+  const data = read();
+  const tpl = data.templates.find((t) => t.id === id);
+  if (!tpl || tpl.ownerId !== userId) return false;
+  data.templates = data.templates.filter((t) => t.id !== id);
+  write(data);
+  return tpl;
+}
+
 module.exports = {
   publicUser,
   isAdmin,
@@ -301,6 +421,8 @@ module.exports = {
   verifyUser,
   setPassword,
   changePassword,
+  updateProfile,
+  getSignature,
   createSession,
   getSession,
   deleteSession,
@@ -316,4 +438,11 @@ module.exports = {
   markMailRead,
   getSmtp,
   saveSmtp,
+  listContacts,
+  createContact,
+  deleteContact,
+  listTemplates,
+  getTemplate,
+  saveTemplate,
+  deleteTemplate,
 };

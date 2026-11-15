@@ -355,14 +355,25 @@ function getSmtp() {
 function saveSmtp(settings) {
   const data = read();
   const prev = data.smtp || {};
+  const text = (value) => String(value || "").trim();
+  // A blank secret means "keep the one already saved".
+  const keep = (value, old) => (value === undefined || value === "" ? old || "" : String(value));
+  const provider = settings.provider === "graph" ? "graph" : "smtp";
   data.smtp = {
-    host: String(settings.host || "").trim(),
+    provider,
+    preset: text(settings.preset).slice(0, 40) || "custom",
+    host: text(settings.host),
     port: Number(settings.port) || 587,
     secure: !!settings.secure,
-    user: String(settings.user || "").trim(),
-    pass: settings.pass === undefined || settings.pass === "" ? (prev.pass || "") : String(settings.pass),
-    fromName: String(settings.fromName || "DocySign").trim() || "DocySign",
-    fromEmail: String(settings.fromEmail || settings.user || "").trim(),
+    noAuth: !!settings.noAuth,
+    allowSelfSigned: !!settings.allowSelfSigned,
+    user: text(settings.user),
+    pass: keep(settings.pass, prev.pass),
+    tenantId: text(settings.tenantId),
+    clientId: text(settings.clientId),
+    clientSecret: keep(settings.clientSecret, prev.clientSecret),
+    fromName: text(settings.fromName || "DocySign") || "DocySign",
+    fromEmail: text(settings.fromEmail || (provider === "smtp" ? settings.user : "")),
   };
   write(data);
   return data.smtp;

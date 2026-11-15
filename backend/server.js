@@ -234,12 +234,12 @@ function activeSmtp() {
 function smtpAuditLine(results, fallback) {
   if (!results || !results.length) return fallback;
   if (results.every((r) => r.skipped)) {
-    return `${fallback} SMTP is not configured — save Gmail or Postfix settings to send real email.`;
+    return `${fallback} Email is not set up, so nothing was sent to real inboxes. An admin can add a mail service in Admin.`;
   }
   const sent = results.filter((r) => r.sent).map((r) => r.email);
   const failed = results.filter((r) => !r.sent && !r.skipped);
   if (failed.length) {
-    return `SMTP sent to ${sent.join(", ") || "nobody"}. Failed: ${failed.map((f) => `${f.email} (${f.error})`).join("; ")}`;
+    return `Email sent to ${sent.join(", ") || "nobody"}. Failed: ${failed.map((f) => `${f.email} (${f.error})`).join("; ")}`;
   }
   return fallback;
 }
@@ -622,14 +622,22 @@ app.get("/api/settings/smtp", auth, requireAdmin, (_req, res) => {
 });
 
 app.put("/api/settings/smtp", auth, requireAdmin, (req, res) => {
+  const b = req.body || {};
   const saved = store.saveSmtp({
-    host: req.body.host,
-    port: req.body.port,
-    secure: req.body.secure,
-    user: req.body.user,
-    pass: req.body.pass,
-    fromName: req.body.fromName,
-    fromEmail: req.body.fromEmail,
+    provider: b.provider,
+    preset: b.preset,
+    host: b.host,
+    port: b.port,
+    secure: b.secure,
+    noAuth: b.noAuth,
+    allowSelfSigned: b.allowSelfSigned,
+    user: b.user,
+    pass: b.pass,
+    tenantId: b.tenantId,
+    clientId: b.clientId,
+    clientSecret: b.clientSecret,
+    fromName: b.fromName,
+    fromEmail: b.fromEmail,
   });
   res.json(smtp.publicSettings(saved));
 });
@@ -637,7 +645,7 @@ app.put("/api/settings/smtp", auth, requireAdmin, (req, res) => {
 app.post("/api/settings/smtp/test", auth, requireAdmin, wrap(async (req, res) => {
   const settings = activeSmtp();
   if (!smtp.isConfigured(settings)) {
-    return res.status(400).json({ error: "Save SMTP settings first" });
+    return res.status(400).json({ error: "Save your email settings first" });
   }
   const to = String(req.body.to || req.user.email || "").trim();
   if (!to) return res.status(400).json({ error: "Enter an address to test" });
@@ -645,7 +653,7 @@ app.post("/api/settings/smtp/test", auth, requireAdmin, wrap(async (req, res) =>
     await smtp.sendTestEmail(settings, to);
     res.json({ ok: true, to });
   } catch (err) {
-    res.status(400).json({ error: err.message || "SMTP test failed" });
+    res.status(400).json({ error: err.message || "The test email could not be sent" });
   }
 }));
 

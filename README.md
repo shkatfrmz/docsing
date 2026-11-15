@@ -148,6 +148,22 @@ Copy `.env.example` to `.env` or save credentials in Admin. Do not commit passwo
 
 PDFs are stored under `backend/uploads/`. User, envelope, and mail data live in `backend/data/`. Both directories are gitignored. Set `DOCYSIGN_UPLOADS_DIR` and `DOCYSIGN_DATA_DIR` to keep them elsewhere.
 
+## Email
+
+Set up in Admin, or with the variables in `.env.example`. Settings saved in Admin take priority.
+
+| Service | How it connects |
+| --- | --- |
+| Gmail / Google Workspace | SMTP with an app password |
+| Microsoft 365 (recommended) | Graph API with an app registration: tenant ID, client ID, client secret. Needs the `Mail.Send` application permission with admin consent, plus `Mail.ReadWrite` to attach PDFs over 3 MB |
+| Microsoft 365 (SMTP with password) | `smtp.office365.com:587`. Microsoft switches password sign-in off by default from the end of December 2026 |
+| Internal relay (IIS SMTP, Exchange, Postfix) | The relay's IP address or name, usually port 25, no sign-in. Allow this server's IP address on the relay |
+| Azure Communication Services | `smtp.azurecomm.net:587` with an SMTP username and an Entra app client secret |
+| Amazon SES, SendGrid, Mailgun, Brevo, Postmark, Resend, Zoho | SMTP, with the host pre-filled |
+| Other SMTP server | Any host, port 587 or 465 |
+
+Use "Send a test" in Admin after saving. Without any mail service, messages still appear in the in-app Mail page.
+
 ## Security notes
 
 - Documents are only served to the sender, signers and CC recipients of an envelope, or to the holder of a signing link. Sessions are sent as a header, never in a URL.

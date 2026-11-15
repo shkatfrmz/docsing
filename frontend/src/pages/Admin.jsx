@@ -107,7 +107,7 @@ export default function Admin() {
         { label: "Waiting", value: stats.waiting, hint: "Out for signature" },
         { label: "Declined", value: stats.declined, hint: "Signer declined" },
         { label: "Voided / expired", value: (stats.voided || 0) + (stats.expired || 0), hint: `${stats.voided || 0} voided · ${stats.expired || 0} expired` },
-        { label: "Mail sent", value: stats.mailSent, hint: stats.smtpReady ? "SMTP ready" : "SMTP not configured" },
+        { label: "Mail sent", value: stats.mailSent, hint: stats.smtpReady ? "Email ready" : "Email not configured" },
       ]
     : [];
 

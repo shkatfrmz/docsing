@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api.js";
 import { useAuth } from "../auth.jsx";
 import Settings from "./Settings.jsx";
+import Directory from "./Directory.jsx";
 
 function badgeClass(status) {
   if (status === "completed") return "badge badge-completed";
@@ -127,6 +128,7 @@ export default function Admin() {
           ["users", "Users"],
           ["envelopes", "Envelopes"],
           ["mail", "Mail settings"],
+          ["signin", "Sign-in"],
         ].map(([id, label]) => (
           <button
             key={id}
@@ -293,6 +295,8 @@ export default function Admin() {
           </table>
         </div>
       )}
+
+      {tab === "signin" && <Directory />}
 
       {tab === "mail" && (
         <>

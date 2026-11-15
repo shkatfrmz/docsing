@@ -147,6 +147,14 @@ export default function Account() {
         </div>
       </div>
 
+      {user.authSource && user.authSource !== "local" ? (
+        <div className="card settings-card" style={{ marginTop: 16 }}>
+          <h3 className="serif" style={{ marginTop: 0 }}>Password</h3>
+          <p className="meta">
+            You sign in with your company account, so your password is managed there, not in DocySign.
+          </p>
+        </div>
+      ) : (
       <div className="card settings-card" style={{ marginTop: 16 }}>
         <h3 className="serif" style={{ marginTop: 0 }}>Change password</h3>
         <form onSubmit={submit}>
@@ -184,6 +192,7 @@ export default function Account() {
           </button>
         </form>
       </div>
+      )}
     </div>
   );
 }

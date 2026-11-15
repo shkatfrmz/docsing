@@ -1,10 +1,15 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth.jsx";
-import { safeNext } from "../api.js";
+import { api, safeNext } from "../api.js";
 
 export default function Signup() {
   const { signup } = useAuth();
+  const [closed, setClosed] = useState(false);
+
+  useEffect(() => {
+    api.authOptions().then((o) => setClosed(!o.localSignup)).catch(() => {});
+  }, []);
   const nav = useNavigate();
   const [params] = useSearchParams();
   const next = params.get("next") || "/app";
@@ -30,6 +35,18 @@ export default function Signup() {
     } finally {
       setBusy(false);
     }
+  }
+
+  if (closed) {
+    return (
+      <div className="auth-page">
+        <div className="auth-card">
+          <h1 className="serif">Sign-up is turned off</h1>
+          <p className="meta">This DocySign uses company accounts. Sign in with yours instead.</p>
+          <Link className="btn btn-primary" to="/login" style={{ marginTop: 12 }}>Go to sign in</Link>
+        </div>
+      </div>
+    );
   }
 
   return (

@@ -148,6 +148,17 @@ Copy `.env.example` to `.env` or save credentials in Admin. Do not commit passwo
 
 PDFs are stored under `backend/uploads/`. User, envelope, and mail data live in `backend/data/`. Both directories are gitignored. Set `DOCYSIGN_UPLOADS_DIR` and `DOCYSIGN_DATA_DIR` to keep them elsewhere.
 
+## Company sign-in
+
+Set up in Admin, on the Sign-in tab (or with the variables in `.env.example`). Both can be on at once, alongside DocySign's own accounts. An account is created the first time someone signs in. People who receive a signing link still sign without an account.
+
+| Method | How people sign in | You provide |
+| --- | --- | --- |
+| Active Directory (LDAP) | Domain username and password on the DocySign sign-in page | Directory server (`ldaps://...`), search base, a read-only service account |
+| Microsoft Entra ID | "Sign in with Microsoft" button, on Microsoft's page | An app registration: tenant ID, client ID, client secret, and the redirect address shown in Admin |
+
+For either one you can limit access to a group and map a group to the DocySign admin role. Sign-up can be turned off so only company accounts get in; existing DocySign accounts keep working, so a local admin can always sign in if the directory is down.
+
 ## Email
 
 Set up in Admin, or with the variables in `.env.example`. Settings saved in Admin take priority.

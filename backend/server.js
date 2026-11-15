@@ -8,6 +8,7 @@ const store = require("./store");
 const { stampEnvelope, createSampleContract, inspectPdf } = require("./pdf");
 const { requestEmail, completedEmail, reminderEmail, declinedEmail, voidedEmail, ccEmail } = require("./mail");
 const smtp = require("./smtp");
+const directory = require("./directory");
 
 function loadEnvFile() {
   const envPath = path.join(__dirname, "..", ".env");
@@ -439,8 +440,15 @@ function noteLoginFailure(key) {
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
+app.get("/api/auth/options", (_req, res) => {
+  res.json(directory.publicOptions());
+});
+
 app.post("/api/auth/signup", (req, res) => {
   try {
+    if (!directory.publicOptions().localSignup) {
+      return res.status(403).json({ error: "Sign-up is turned off. Sign in with your company account instead." });
+    }
     const name = String(req.body.name || "").trim();
     const email = String(req.body.email || "").trim();
     const password = String(req.body.password || "");
@@ -458,22 +466,86 @@ app.post("/api/auth/signup", (req, res) => {
   }
 });
 
-app.post("/api/auth/login", (req, res) => {
+app.post("/api/auth/login", wrap(async (req, res) => {
   const email = String(req.body.email || "").trim();
   const password = String(req.body.password || "");
   const key = loginKey(req, email);
   if (loginBlocked(key)) {
     return res.status(429).json({ error: "Too many failed attempts. Wait 15 minutes and try again." });
   }
-  const user = store.verifyUser(email, password);
+  // DocySign's own accounts first, then the company directory.
+  let user = store.verifyUser(email, password);
+  const settings = directory.getSettings();
+  if (!user && directory.ldapReady(settings)) {
+    const person = await directory.ldapAuthenticate(email, password);
+    if (person) user = store.upsertDirectoryUser({ ...person, source: "ldap" });
+  }
   if (!user) {
     noteLoginFailure(key);
-    return res.status(401).json({ error: "Invalid email or password" });
+    return res.status(401).json({
+      error: directory.ldapReady(settings) ? "Invalid username or password" : "Invalid email or password",
+    });
   }
   loginFailures.delete(key);
   const session = store.createSession(user.id);
   res.json({ token: session.token, user: store.publicUser(user) });
+}));
+
+// "Sign in with Microsoft": send the browser to Microsoft, then come back.
+app.get("/api/auth/entra/start", (req, res) => {
+  const origin = requestOrigin(req);
+  if (!directory.entraReady(directory.getSettings())) {
+    return res.redirect(`${origin}/login?error=${encodeURIComponent("Microsoft sign-in is not set up.")}`);
+  }
+  const next = String(req.query.next || "");
+  res.redirect(directory.entraStart({ origin, next: /^\/(?![\/\\])/.test(next) ? next : "" }));
 });
+
+app.get("/api/auth/entra/callback", wrap(async (req, res) => {
+  // This request arrives from Microsoft, so its Referer is not ours: work out
+  // our own address from where the request landed.
+  const fallback = APP_URL || cleanOrigin(`${req.protocol}://${req.get("x-forwarded-host") || req.get("host")}`) || requestOrigin(req);
+  const back = (origin, message) => res.redirect(`${origin}/login?error=${encodeURIComponent(message)}`);
+  if (req.query.error) {
+    return back(fallback, req.query.error === "access_denied" ? "Sign-in was cancelled." : "Microsoft could not sign you in.");
+  }
+  try {
+    const result = await directory.entraFinish({ code: req.query.code, state: req.query.state });
+    const user = store.upsertDirectoryUser({ ...result.person, source: "entra" });
+    const session = store.createSession(user.id);
+    const query = new URLSearchParams({ code: directory.createHandoff(session.token) });
+    if (result.next) query.set("next", result.next);
+    res.redirect(`${result.origin}/auth/callback?${query}`);
+  } catch (err) {
+    if (!err.status) console.error(err);
+    back(err.origin || fallback, err.status ? err.message : "Microsoft sign-in failed.");
+  }
+}));
+
+app.post("/api/auth/exchange", (req, res) => {
+  const token = directory.redeemHandoff(req.body && req.body.code);
+  const session = store.getSession(token);
+  const user = session && store.getUser(session.userId);
+  if (!user) return res.status(400).json({ error: "That sign-in has expired. Please try again." });
+  res.json({ token, user: store.publicUser(user) });
+});
+
+app.get("/api/settings/auth", auth, requireAdmin, (_req, res) => {
+  res.json({ ...directory.adminView(), defaultUserFilter: directory.DEFAULT_USER_FILTER });
+});
+
+app.put("/api/settings/auth", auth, requireAdmin, (req, res) => {
+  res.json({ ...directory.saveSettings(req.body), defaultUserFilter: directory.DEFAULT_USER_FILTER });
+});
+
+// Lets an admin check the saved directory settings with a real account.
+app.post("/api/settings/auth/ldap/test", auth, requireAdmin, wrap(async (req, res) => {
+  const cfg = directory.getSettings().ldap;
+  if (!cfg.url || !cfg.baseDn) return res.status(400).json({ error: "Save the directory server and search base first" });
+  const person = await directory.ldapAuthenticate(req.body.username, String(req.body.password || ""), cfg);
+  if (!person) return res.status(400).json({ error: "The directory did not accept that username and password." });
+  res.json({ ok: true, ...person });
+}));
 
 app.post("/api/auth/logout", auth, (req, res) => {
   store.deleteSession(readToken(req));
@@ -488,6 +560,9 @@ app.post("/api/auth/password", auth, (req, res) => {
   try {
     const current = String(req.body.currentPassword || "");
     const next = String(req.body.password || "");
+    if ((req.user.authSource || "local") !== "local") {
+      return res.status(400).json({ error: "Your password is managed by your company directory. Change it there." });
+    }
     if (!current) return res.status(400).json({ error: "Enter your current password" });
     store.changePassword(req.user.id, current, next);
     // Sign out every other device; keep the one that made the change.

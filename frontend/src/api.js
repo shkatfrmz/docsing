@@ -19,7 +19,7 @@ function authHeaders() {
 export const SIGNED_OUT_EVENT = "docysign:signed-out";
 
 function noteSignedOut(url) {
-  if (url.startsWith("/api/auth/login")) return;
+  if (url.startsWith("/api/auth/login") || url.startsWith("/api/auth/exchange")) return;
   const had = !!getToken();
   setToken("");
   if (had) window.dispatchEvent(new Event(SIGNED_OUT_EVENT));
@@ -147,6 +147,26 @@ export const api = {
   stats: () => request("/api/stats"),
   mail: () => request("/api/mail"),
   mailOne: (id) => request(`/api/mail/${id}`),
+  authOptions: () => request("/api/auth/options"),
+  exchange: (code) =>
+    request("/api/auth/exchange", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    }),
+  authSettings: () => request("/api/settings/auth"),
+  saveAuthSettings: (body) =>
+    request("/api/settings/auth", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  testDirectory: (username, password) =>
+    request("/api/settings/auth/ldap/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    }),
   smtp: () => request("/api/settings/smtp"),
   saveSmtp: (body) =>
     request("/api/settings/smtp", {

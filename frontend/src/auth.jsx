@@ -42,6 +42,12 @@ export function AuthProvider({ children }) {
       setUser(res.user);
       return res.user;
     },
+    // Takes over a session created elsewhere, such as Microsoft sign-in.
+    adopt(res) {
+      setToken(res.token);
+      setUser(res.user);
+      return res.user;
+    },
     async logout() {
       try { await api.logout(); } catch {}
       setToken("");

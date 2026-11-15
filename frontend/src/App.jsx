@@ -10,6 +10,7 @@ import Dashboard from "./pages/Dashboard.jsx";
 import Mail from "./pages/Mail.jsx";
 import Account from "./pages/Account.jsx";
 import Contacts from "./pages/Contacts.jsx";
+import AuthCallback from "./pages/AuthCallback.jsx";
 
 // Pages that need the PDF engine load on demand, keeping the first page light.
 const Prepare = lazy(() => import("./pages/Prepare.jsx"));
@@ -102,6 +103,7 @@ export default function App() {
         <Route path="/" element={<Landing />} />
         <Route path="/login" element={<GuestOnly><Login /></GuestOnly>} />
         <Route path="/signup" element={<GuestOnly><Signup /></GuestOnly>} />
+        <Route path="/auth/callback" element={<AuthCallback />} />
         <Route path="/app" element={<RequireAuth><Dashboard /></RequireAuth>} />
         <Route path="/mail" element={<RequireAuth><Mail /></RequireAuth>} />
         <Route path="/account" element={<RequireAuth><Account /></RequireAuth>} />

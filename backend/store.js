@@ -42,6 +42,7 @@ function read() {
   data.smtp = data.smtp || null;
   data.contacts = data.contacts || [];
   data.templates = data.templates || [];
+  data.auth = data.auth || null;
   let changed = false;
   data.users.forEach((u) => {
     if (!u.role) {
@@ -77,6 +78,9 @@ function publicUser(user) {
     email: user.email,
     role: user.role === "admin" ? "admin" : "user",
     createdAt: user.createdAt,
+    // "local" accounts have a DocySign password; "ldap" and "entra" accounts
+    // sign in through the company directory.
+    authSource: user.authSource || "local",
     hasSignature: !!(user.signature && String(user.signature).startsWith("data:image")),
     hasInitials: !!(user.initials && String(user.initials).startsWith("data:image")),
   };
@@ -121,6 +125,58 @@ function createUser({ name, email, password, role }) {
   data.users.push(user);
   write(data);
   return user;
+}
+
+function countUsers() {
+  return read().users.length;
+}
+
+/**
+ * Finds or creates the account for someone who signed in through the
+ * directory. `admin` true/false follows a directory group; undefined leaves
+ * the role alone. The last admin is never demoted.
+ */
+function upsertDirectoryUser({ email, name, source, admin }) {
+  const data = read();
+  const key = String(email || "").trim().toLowerCase();
+  let user = data.users.find((u) => u.email === key);
+  if (!user) {
+    // A random password nobody knows: this account only signs in through the directory.
+    const salt = crypto.randomBytes(16).toString("hex");
+    user = {
+      id: crypto.randomUUID(),
+      name: String(name || key).trim().slice(0, 200),
+      email: key,
+      salt,
+      passwordHash: hashPassword(crypto.randomBytes(32).toString("hex"), salt),
+      role: data.users.length === 0 ? "admin" : "user",
+      authSource: source,
+      createdAt: new Date().toISOString(),
+    };
+    data.users.push(user);
+  } else {
+    if (name) user.name = String(name).trim().slice(0, 200);
+    if (!user.authSource || user.authSource === "local") user.linkedSource = source;
+    else user.authSource = source;
+  }
+  if (admin === true) user.role = "admin";
+  if (admin === false && user.role === "admin") {
+    if (data.users.filter((u) => u.role === "admin").length > 1) user.role = "user";
+  }
+  user.lastLoginAt = new Date().toISOString();
+  write(data);
+  return user;
+}
+
+function getAuthSettings() {
+  return read().auth || null;
+}
+
+function saveAuthSettings(settings) {
+  const data = read();
+  data.auth = settings;
+  write(data);
+  return data.auth;
 }
 
 function setUserRole(id, role) {
@@ -469,6 +525,10 @@ module.exports = {
   getSession,
   deleteSession,
   deleteUserSessions,
+  countUsers,
+  upsertDirectoryUser,
+  getAuthSettings,
+  saveAuthSettings,
   listEnvelopes,
   getEnvelope,
   getByToken,

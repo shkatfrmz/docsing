@@ -22,7 +22,10 @@ DocySign is a DocuSign-style web app for sending PDF documents out for electroni
 - Inbox of documents waiting on you
 - Completed library shared with every party on the envelope
 - Preview, print, and download the original or stamped PDF
-- Certificate of completion and audit trail when everyone has signed
+- Certificate of completion and audit trail when everyone has signed, with each signer's time and IP address and a SHA-256 of the original document
+- Names, titles and field values in any script (Arabic, Hebrew, Cyrillic, Greek...) are stamped correctly, including right-to-left text
+- Works on rotated and cropped PDF pages; fields can be moved, resized and marked optional
+- Signing works with mouse, touch and pen
 
 ## Tech stack
 
@@ -32,7 +35,7 @@ DocySign is a DocuSign-style web app for sending PDF documents out for electroni
 | Backend | Node.js, Express, multer, pdf-lib |
 | Storage | JSON file store (`backend/data/`) and uploaded PDFs (`backend/uploads/`) |
 
-Recipients receive real emails when SMTP is configured (Settings, or environment variables). Copies also land in the in-app Mail page. Recipients who sign up with the same email as the envelope see requests in Mail and To sign.
+Recipients receive real emails when SMTP is configured (in Admin, or with environment variables). Copies also land in the in-app Mail page. Recipients who sign up with the same email as the envelope see requests in Mail and To sign.
 
 ## Project structure
 
@@ -44,7 +47,7 @@ start.sh          Starts backend and frontend together
 
 ## Requirements
 
-- Node.js 18 or later
+- Node.js 20 or later
 - npm
 
 ## Setup
@@ -75,11 +78,30 @@ npm run dev
 
 Open [http://localhost:5173](http://localhost:5173).
 
-Or from the repo root:
+Or from the repo root (installs dependencies on first run, Ctrl+C stops both):
 
 ```bash
 bash start.sh
 ```
+
+## Run in production
+
+Build the frontend once; the API then serves it, so one process on one port runs the whole app.
+
+```bash
+cd frontend && npm run build
+cd ../backend && APP_URL=https://sign.example.com npm start
+```
+
+Set `APP_URL` to the public address of the app. It is used for the links in emails. Without it, links use the address the sender was on when they sent the envelope.
+
+## Tests
+
+```bash
+cd backend && npm test
+```
+
+The suite starts the API on a spare port with a throwaway data folder and covers access control, validation, sequential signing through to the stamped PDF, declining, voiding, sessions and data-file safety.
 
 ## How to use it
 
@@ -87,7 +109,7 @@ bash start.sh
 2. In Workspace, upload a PDF or click Use sample NDA.
 3. Add recipients with name and email.
 4. Place fields on the PDF for each person. Click the X on a box, or Delete in Placed fields, to remove it.
-5. Open Settings and save Gmail (app password) or Postfix SMTP credentials.
+5. As an admin (the first account created), open Admin and save Gmail (app password) or Postfix SMTP credentials.
 6. Send for signature. Each recipient gets a real email with a signing link (`/sign/:token`).
 7. Open the link (or Mail / To sign), fill the fields, and finish signing.
 8. When everyone has signed, every party gets a completion email with the final PDF attached. The document also appears under Completed.
@@ -103,7 +125,7 @@ Use two accounts with different emails to demo the full loop (sender and signer)
 | `/app` | Workspace (Sent, To sign, Completed) |
 | `/mail` | In-app mailbox |
 | `/contacts` | Address book |
-| `/settings` | SMTP (Gmail or Postfix) |
+| `/admin` | Users, envelopes and SMTP (admins only) |
 | `/prepare/:id` | Place fields and send |
 | `/envelope/:id` | Envelope status and audit trail |
 | `/preview/:id` | Preview / print / download |
@@ -122,9 +144,16 @@ The backend listens on port 3001.
 - `GET/PUT /api/settings/smtp` `POST /api/settings/smtp/test`
 - `GET/POST /api/sign/:token`
 
-Copy `.env.example` to `.env` or save credentials in Settings. Do not commit passwords. Gmail needs an [App Password](https://myaccount.google.com/apppasswords), not your normal login.
+Copy `.env.example` to `.env` or save credentials in Admin. Do not commit passwords. Gmail needs an [App Password](https://myaccount.google.com/apppasswords), not your normal login.
 
-PDFs are stored under `backend/uploads/`. User, envelope, and mail data live in `backend/data/`. Both directories are gitignored.
+PDFs are stored under `backend/uploads/`. User, envelope, and mail data live in `backend/data/`. Both directories are gitignored. Set `DOCYSIGN_UPLOADS_DIR` and `DOCYSIGN_DATA_DIR` to keep them elsewhere.
+
+## Security notes
+
+- Documents are only served to the sender, signers and CC recipients of an envelope, or to the holder of a signing link. Sessions are sent as a header, never in a URL.
+- Sessions last 30 days. Changing a password signs out every other device. Repeated failed logins are blocked for 15 minutes.
+- Mail server certificates are verified. For a server with a self-signed certificate set `SMTP_ALLOW_SELF_SIGNED=true` (servers on localhost are always allowed).
+- Back up `backend/data/db.json`. If it is ever damaged the server reports it and refuses to write, rather than starting over with an empty database.
 
 ## License
 

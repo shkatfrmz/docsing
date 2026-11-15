@@ -9,17 +9,97 @@ export function setToken(token) {
   else localStorage.removeItem(TOKEN_KEY);
 }
 
-async function request(url, options = {}) {
-  const headers = { ...(options.headers || {}) };
+function authHeaders() {
   const token = getToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(url, { ...options, headers });
-  const data = await res.json().catch(() => ({}));
-  if (res.status === 401 && !url.startsWith("/api/auth/login")) {
-    setToken("");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+// Fired when the server no longer accepts the saved session, so the app can
+// drop the signed-in user instead of showing pages that will keep failing.
+export const SIGNED_OUT_EVENT = "docysign:signed-out";
+
+function noteSignedOut(url) {
+  if (url.startsWith("/api/auth/login")) return;
+  const had = !!getToken();
+  setToken("");
+  if (had) window.dispatchEvent(new Event(SIGNED_OUT_EVENT));
+}
+
+async function request(url, options = {}) {
+  const headers = { ...(options.headers || {}), ...authHeaders() };
+  let res;
+  try {
+    res = await fetch(url, { ...options, headers });
+  } catch {
+    throw new Error("Could not reach the server. Check your connection and try again.");
   }
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) noteSignedOut(url);
   if (!res.ok) throw new Error(data.error || "Request failed");
   return data;
+}
+
+/** Fetches a protected file. The session is sent as a header, never in the URL. */
+export async function fetchFile(url) {
+  let res;
+  try {
+    res = await fetch(url, { headers: authHeaders() });
+  } catch {
+    throw new Error("Could not reach the server. Check your connection and try again.");
+  }
+  if (res.status === 401) noteSignedOut(url);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Could not load the file");
+  }
+  const disposition = res.headers.get("content-disposition") || "";
+  const match = /filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i.exec(disposition);
+  let name = "";
+  if (match) {
+    try { name = decodeURIComponent(match[1] || match[2]); } catch { name = match[2] || ""; }
+  }
+  return { blob: await res.blob(), name };
+}
+
+/** Saves the envelope's PDF (the signed copy once completed) to the device. */
+export async function downloadEnvelope(id) {
+  const { blob, name } = await fetchFile(`/api/envelopes/${id}/download`);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name || "document.pdf";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
+/** Opens the browser's print dialog for the envelope's PDF. */
+export async function printEnvelope(id) {
+  const { blob } = await fetchFile(`/api/envelopes/${id}/file`);
+  const url = URL.createObjectURL(new Blob([blob], { type: "application/pdf" }));
+  const frame = document.createElement("iframe");
+  frame.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;";
+  frame.src = url;
+  frame.onload = () => {
+    try {
+      frame.contentWindow.focus();
+      frame.contentWindow.print();
+    } catch {
+      // Some browsers will not print an embedded PDF: show it in a tab instead.
+      window.open(url, "_blank");
+    }
+  };
+  document.body.appendChild(frame);
+  setTimeout(() => {
+    frame.remove();
+    URL.revokeObjectURL(url);
+  }, 5 * 60 * 1000);
+}
+
+/** Only follow "next" links that stay inside this app. */
+export function safeNext(next, fallback = "/app") {
+  return typeof next === "string" && /^\/(?![\/\\])/.test(next) ? next : fallback;
 }
 
 export const api = {
@@ -98,19 +178,19 @@ export const api = {
     request(`/api/envelopes/${id}/send`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ origin: window.location.origin }),
+      body: JSON.stringify({}),
     }),
   remind: (id, signerId) =>
     request(`/api/envelopes/${id}/remind`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ origin: window.location.origin, signerId }),
+      body: JSON.stringify({ signerId }),
     }),
   voidEnvelope: (id, reason) =>
     request(`/api/envelopes/${id}/void`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reason, origin: window.location.origin }),
+      body: JSON.stringify({ reason }),
     }),
   duplicate: (id) => request(`/api/envelopes/${id}/duplicate`, { method: "POST" }),
   saveTemplate: (id, title) =>
@@ -125,13 +205,13 @@ export const api = {
     request(`/api/sign/${token}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ values, origin: window.location.origin }),
+      body: JSON.stringify({ values }),
     }),
   decline: (token, reason) =>
     request(`/api/sign/${token}/decline`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reason, origin: window.location.origin }),
+      body: JSON.stringify({ reason }),
     }),
   adminStats: () => request("/api/admin/stats"),
   adminUsers: () => request("/api/admin/users"),
@@ -156,11 +236,3 @@ export const api = {
     }),
   adminEnvelopes: () => request("/api/admin/envelopes"),
 };
-
-export function fileUrl(id) {
-  return `/api/envelopes/${id}/file?access=${encodeURIComponent(getToken())}`;
-}
-
-export function downloadUrl(id) {
-  return `/api/envelopes/${id}/download?access=${encodeURIComponent(getToken())}`;
-}

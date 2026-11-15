@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { api, downloadUrl } from "../api.js";
+import { api } from "../api.js";
 import { useAuth } from "../auth.jsx";
 import PdfViewer from "../components/PdfViewer.jsx";
+import DownloadButton from "../components/DownloadButton.jsx";
 
 function badgeClass(status) {
   if (status === "completed" || status === "signed") return "badge badge-completed";
@@ -39,9 +40,14 @@ export default function Envelope() {
   }
 
   async function remove() {
-    if (!window.confirm("Delete this envelope?")) return;
-    await api.remove(id);
-    nav("/app");
+    if (!window.confirm("Delete this envelope? The document and its history are removed for good.")) return;
+    setError("");
+    try {
+      await api.remove(id);
+      nav("/app");
+    } catch (e) {
+      setError(e.message);
+    }
   }
 
   async function duplicate() {
@@ -120,7 +126,7 @@ export default function Envelope() {
   }
 
   const mySigner = env.signers.find((s) => s.email.toLowerCase() === user.email && s.token);
-  const downloadHref = downloadUrl(id);
+  const isOwner = env.ownerId === user.id;
 
   return (
     <div className="page">
@@ -133,8 +139,8 @@ export default function Envelope() {
         <div className="row">
           <span className={badgeClass(env.status)}>{env.status}</span>
           <Link className="btn btn-ghost" to={`/preview/${id}`}>Preview / Print</Link>
-          <a className="btn btn-primary" href={downloadHref}>Download PDF</a>
-          {env.status === "sent" && env.signers.some((s) => s.status === "pending" || s.status === "waiting") && (
+          <DownloadButton id={id} />
+          {isOwner && env.status === "sent" && env.signers.some((s) => s.status === "pending" || s.status === "waiting") && (
             <button type="button" className="btn btn-gold" disabled={busy} onClick={() => remind()}>
               {busy ? "Sending…" : env.signingOrder ? "Remind current signer" : "Remind all pending"}
             </button>
@@ -151,9 +157,13 @@ export default function Envelope() {
             </>
           )}
           {env.status === "draft" && <Link className="btn btn-ghost" to={`/prepare/${id}`}>Edit</Link>}
-          <button type="button" className="btn btn-danger btn-sm" onClick={remove}>Delete</button>
+          {isOwner && env.status !== "sent" && (
+            <button type="button" className="btn btn-danger btn-sm" onClick={remove}>Delete</button>
+          )}
         </div>
       </div>
+      {error && <div className="error" role="alert" style={{ marginBottom: 12 }}>{error}</div>}
+      {ok && <div className="ok" style={{ marginBottom: 12 }}>{ok}</div>}
 
       <div className="layout-2">
         <aside className="sidebar">
@@ -181,14 +191,20 @@ export default function Envelope() {
                     )}
                   </div>
                 )}
+                {s.signedAt && (
+                  <div className="meta" style={{ marginTop: 4 }}>
+                    {s.role === "approver" ? "Approved" : "Signed"} {new Date(s.signedAt).toLocaleString()}
+                  </div>
+                )}
+                {!s.signedAt && s.viewedAt && s.status === "pending" && (
+                  <div className="meta" style={{ marginTop: 4 }}>Opened {new Date(s.viewedAt).toLocaleString()}</div>
+                )}
                 {s.lastRemindedAt && s.status === "pending" && (
                   <div className="meta" style={{ marginTop: 4 }}>Last reminded {new Date(s.lastRemindedAt).toLocaleString()}</div>
                 )}
               </div>
             ))}
             {copied && <div className="ok">Copied: {copied}</div>}
-            {ok && <div className="ok">{ok}</div>}
-            {error && <div className="error">{error}</div>}
             {(env.cc || []).length > 0 && (
               <>
                 <h3 style={{ marginTop: 16 }}>Copied</h3>
@@ -236,9 +252,15 @@ export default function Envelope() {
           </div>
         </aside>
         <PdfViewer
-          src={`/api/envelopes/${id}/file`}
+          src={`/api/envelopes/${id}/file?s=${env.status}`}
           fields={env.status === "completed" ? [] : env.fields}
-          renderValue={(f) => (f.value && !f.value.startsWith("data:") ? f.value : f.type)}
+          renderValue={(f) => {
+            if (f.type === "checkbox") return f.value === "Yes" ? "X" : "";
+            if (f.value && f.value.startsWith("data:image")) {
+              return <img src={f.value} alt="" style={{ width: "100%", height: "100%", objectFit: "contain" }} />;
+            }
+            return f.value || f.type;
+          }}
         />
       </div>
 

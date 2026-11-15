@@ -11,6 +11,8 @@ export default defineConfig({
       "/api": {
         target: "http://127.0.0.1:3001",
         changeOrigin: true,
+        // Pass the visitor's address on, so the audit trail records it.
+        xfwd: true,
       },
     },
   },

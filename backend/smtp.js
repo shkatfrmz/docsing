@@ -6,7 +6,8 @@ function escapeHtml(value) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function envSettings() {
@@ -112,8 +113,8 @@ function wrapHtml({
                 </tr>` : ""}
                 ${ctaHref ? `<tr>
                   <td style="padding:24px 40px 8px;">
-                    <a href="${ctaHref}" style="display:inline-block;background:#0a0a0a;color:#ffffff;text-decoration:none;padding:14px 22px;border-radius:4px;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:700;letter-spacing:0.02em;">${ctaLabel}</a>
-                    <p style="margin:16px 0 0;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.5;color:#9a9a9a;word-break:break-all;">If the button does not work, paste this link into your browser:<br/>${ctaHref}</p>
+                    <a href="${escapeHtml(ctaHref)}" style="display:inline-block;background:#0a0a0a;color:#ffffff;text-decoration:none;padding:14px 22px;border-radius:4px;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:700;letter-spacing:0.02em;">${ctaLabel}</a>
+                    <p style="margin:16px 0 0;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.5;color:#9a9a9a;word-break:break-all;">If the button does not work, paste this link into your browser:<br/>${escapeHtml(ctaHref)}</p>
                   </td>
                 </tr>` : ""}
                 <tr>
@@ -137,6 +138,13 @@ function wrapHtml({
 </html>`;
 }
 
+// Certificates are verified by default. A mail server on this machine, or one
+// explicitly allowed with SMTP_ALLOW_SELF_SIGNED=true, may use a self-signed one.
+function allowSelfSigned(host) {
+  if (String(process.env.SMTP_ALLOW_SELF_SIGNED || "").toLowerCase() === "true") return true;
+  return ["localhost", "127.0.0.1", "::1"].includes(String(host || "").toLowerCase());
+}
+
 function createTransport(settings) {
   return nodemailer.createTransport({
     host: settings.host,
@@ -146,7 +154,10 @@ function createTransport(settings) {
       user: settings.user,
       pass: settings.pass,
     },
-    tls: { rejectUnauthorized: false },
+    tls: { rejectUnauthorized: !allowSelfSigned(settings.host) },
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    socketTimeout: 30000,
   });
 }
 
@@ -155,12 +166,11 @@ async function sendMail(settings, { to, toName, subject, html, text, attachments
     return { sent: false, skipped: true, error: "SMTP is not configured" };
   }
   const transporter = createTransport(settings);
-  const fromName = settings.fromName || "DocySign";
-  const fromEmail = settings.fromEmail || settings.user;
+  // Address objects let nodemailer quote names safely, whatever they contain.
   await transporter.sendMail({
-    from: `"${fromName}" <${fromEmail}>`,
-    to: toName ? `"${toName}" <${to}>` : to,
-    subject,
+    from: { name: settings.fromName || "DocySign", address: settings.fromEmail || settings.user },
+    to: toName ? { name: toName, address: to } : to,
+    subject: String(subject || "").replace(/[\r\n]+/g, " "),
     html,
     text,
     attachments,

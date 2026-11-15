@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
 import { useAuth } from "../auth.jsx";
@@ -35,6 +35,8 @@ export default function Prepare() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState("");
+  // What the server last stored, to tell whether there are unsaved changes.
+  const savedPayload = useRef("");
 
   useEffect(() => {
     api.get(id).then((data) => {
@@ -52,6 +54,7 @@ export default function Prepare() {
       setCc(data.cc || []);
       setSigningOrder(!!data.signingOrder);
       setExpiresAt(data.expiresAt ? data.expiresAt.slice(0, 10) : "");
+      savedPayload.current = "";
     }).catch((e) => setError(e.message));
     api.contacts().then(setContacts).catch(() => {});
   }, [id, nav, user]);
@@ -69,6 +72,21 @@ export default function Prepare() {
     signingOrder,
     expiresAt: expiresAt || null,
   }), [title, message, signers, fields, cc, signingOrder, expiresAt]);
+
+  // The first payload after loading is the saved state.
+  const serialized = JSON.stringify(payload);
+  if (env && !savedPayload.current) savedPayload.current = serialized;
+  const dirty = !!env && serialized !== savedPayload.current;
+
+  useEffect(() => {
+    if (!dirty) return undefined;
+    const warn = (e) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
 
   function addSigner(preset) {
     setSigners((prev) => [...prev, {
@@ -118,6 +136,10 @@ export default function Prepare() {
     setFields((prev) => prev.filter((f) => f.signerId !== sid));
   }
 
+  function updateField(fid, patch) {
+    setFields((prev) => prev.map((f) => (f.id === fid ? { ...f, ...patch } : f)));
+  }
+
   function removeField(fid) {
     setFields((prev) => prev.filter((f) => f.id !== fid));
     setActiveId((cur) => (cur === fid ? null : cur));
@@ -131,8 +153,8 @@ export default function Prepare() {
       type: placing.type,
       signerId: placing.signerId,
       page,
-      x: Math.max(0, x - spec.w / 2),
-      y: Math.max(0, y - spec.h / 2),
+      x: Math.min(100 - spec.w, Math.max(0, x - spec.w / 2)),
+      y: Math.min(100 - spec.h, Math.max(0, y - spec.h / 2)),
       w: spec.w,
       h: spec.h,
       required: true,
@@ -168,6 +190,7 @@ export default function Prepare() {
         if (!fields.length) throw new Error("Place at least one field on the PDF");
       }
       await api.update(id, payload);
+      savedPayload.current = serialized;
       if (send) {
         await api.send(id);
         nav(`/envelope/${id}`);
@@ -193,6 +216,7 @@ export default function Prepare() {
           <h1 className="serif">{title || "Untitled"}</h1>
         </div>
         <div className="row">
+          {dirty && <span className="meta">Unsaved changes</span>}
           <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => save(false)}>Save draft</button>
           <button type="button" className="btn btn-gold" disabled={busy} onClick={() => save(true)}>Send for signature</button>
         </div>
@@ -212,7 +236,13 @@ export default function Prepare() {
             Sign in order (sequential)
           </label>
           <label className="label">Expires (optional)</label>
-          <input className="input" type="date" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} />
+          <input
+            className="input"
+            type="date"
+            min={new Date().toISOString().slice(0, 10)}
+            value={expiresAt}
+            onChange={(e) => setExpiresAt(e.target.value)}
+          />
 
           <label className="label">Recipients</label>
           {signers.map((s, i) => (
@@ -271,7 +301,7 @@ export default function Prepare() {
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => addCc()}>Add CC</button>
 
           <label className="label">Place a field</label>
-          <p className="hint">Select a field, then click the PDF.</p>
+          <p className="hint">Select a field, then click the PDF. Drag a placed field to move it, or drag its corner to resize.</p>
           {signers.map((s) => (
             <div key={s.id} style={{ marginBottom: 10 }}>
               <div className="hint" style={{ marginBottom: 6 }}>{s.name || s.email || "Unnamed recipient"}</div>
@@ -304,14 +334,26 @@ export default function Prepare() {
               {fields.map((f) => {
                 const signer = signers.find((s) => s.id === f.signerId);
                 return (
-                  <div key={f.id} className="field-chip" style={{ width: "100%" }}>
+                  <div
+                    key={f.id}
+                    className="field-chip"
+                    style={{ width: "100%", gap: 8, borderStyle: activeId === f.id ? "solid" : undefined }}
+                  >
                     <button
                       type="button"
                       style={{ background: "none", border: 0, padding: 0, textAlign: "left", flex: 1, cursor: "pointer", fontWeight: 600 }}
                       onClick={() => setActiveId(f.id)}
                     >
-                      {f.type} · {signer?.name || "signer"}
+                      {f.type} · {signer?.name || "signer"} · p{f.page}
                     </button>
+                    <label className="check-label" title="Signers must fill required fields before they can finish">
+                      <input
+                        type="checkbox"
+                        checked={f.required !== false}
+                        onChange={(e) => updateField(f.id, { required: e.target.checked })}
+                      />
+                      Required
+                    </label>
                     <button type="button" className="btn btn-danger btn-sm" onClick={() => removeField(f.id)}>
                       Delete
                     </button>
@@ -326,8 +368,10 @@ export default function Prepare() {
           fields={fields}
           activeId={activeId}
           interactive
+          placing={!!placing}
           onSelect={(f) => setActiveId(f.id)}
-          onMove={(fid, pos) => setFields((prev) => prev.map((f) => (f.id === fid ? { ...f, ...pos } : f)))}
+          onMove={updateField}
+          onResize={updateField}
           onPlace={onPlace}
           onDelete={removeField}
           renderValue={(f) => {

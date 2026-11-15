@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { api, getToken, setToken } from "./api.js";
+import { api, getToken, setToken, SIGNED_OUT_EVENT } from "./api.js";
 
 const AuthContext = createContext(null);
 
@@ -19,6 +19,12 @@ export function AuthProvider({ children }) {
         setUser(null);
       })
       .finally(() => setReady(true));
+  }, []);
+
+  useEffect(() => {
+    const onSignedOut = () => setUser(null);
+    window.addEventListener(SIGNED_OUT_EVENT, onSignedOut);
+    return () => window.removeEventListener(SIGNED_OUT_EVENT, onSignedOut);
   }, []);
 
   const value = useMemo(() => ({

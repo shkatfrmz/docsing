@@ -1,18 +1,22 @@
+import { lazy, Suspense } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "./auth.jsx";
+import { safeNext } from "./api.js";
 import Logo from "./components/Logo.jsx";
 import Landing from "./pages/Landing.jsx";
 import Login from "./pages/Login.jsx";
 import Signup from "./pages/Signup.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
-import Prepare from "./pages/Prepare.jsx";
-import Envelope from "./pages/Envelope.jsx";
-import Sign from "./pages/Sign.jsx";
 import Mail from "./pages/Mail.jsx";
-import Preview from "./pages/Preview.jsx";
-import Admin from "./pages/Admin.jsx";
 import Account from "./pages/Account.jsx";
 import Contacts from "./pages/Contacts.jsx";
+
+// Pages that need the PDF engine load on demand, keeping the first page light.
+const Prepare = lazy(() => import("./pages/Prepare.jsx"));
+const Envelope = lazy(() => import("./pages/Envelope.jsx"));
+const Sign = lazy(() => import("./pages/Sign.jsx"));
+const Preview = lazy(() => import("./pages/Preview.jsx"));
+const Admin = lazy(() => import("./pages/Admin.jsx"));
 
 function Topbar() {
   const { pathname } = useLocation();
@@ -85,7 +89,7 @@ function GuestOnly({ children }) {
   const [params] = useSearchParams();
   const next = params.get("next");
   if (!ready) return <div className="page">Loading…</div>;
-  if (user) return <Navigate to={next && next.startsWith("/") ? next : "/app"} replace />;
+  if (user) return <Navigate to={safeNext(next)} replace />;
   return children;
 }
 
@@ -93,6 +97,7 @@ export default function App() {
   return (
     <>
       <Topbar />
+      <Suspense fallback={<div className="page">Loading…</div>}>
       <Routes>
         <Route path="/" element={<Landing />} />
         <Route path="/login" element={<GuestOnly><Login /></GuestOnly>} />
@@ -109,6 +114,7 @@ export default function App() {
         <Route path="/sign/:token" element={<Sign />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      </Suspense>
     </>
   );
 }

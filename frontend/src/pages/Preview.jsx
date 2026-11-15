@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { api, downloadUrl, fileUrl } from "../api.js";
+import { api, printEnvelope } from "../api.js";
 import PdfViewer from "../components/PdfViewer.jsx";
+import DownloadButton from "../components/DownloadButton.jsx";
 
 export default function Preview() {
   const { id } = useParams();
@@ -12,11 +13,17 @@ export default function Preview() {
     api.get(id).then(setEnv).catch((e) => setError(e.message));
   }, [id]);
 
-  function printDoc() {
-    const url = fileUrl(id);
-    const w = window.open(url, "_blank", "noopener");
-    if (w) {
-      w.addEventListener("load", () => w.print());
+  const [printing, setPrinting] = useState(false);
+
+  async function printDoc() {
+    setPrinting(true);
+    setError("");
+    try {
+      await printEnvelope(id);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setPrinting(false);
     }
   }
 
@@ -50,11 +57,14 @@ export default function Preview() {
           </p>
         </div>
         <div className="row">
-          <button type="button" className="btn btn-ghost" onClick={printDoc}>Print</button>
-          <a className="btn btn-primary" href={downloadUrl(id)}>Download PDF</a>
+          <button type="button" className="btn btn-ghost" disabled={printing} onClick={printDoc}>
+            {printing ? "Preparing…" : "Print"}
+          </button>
+          <DownloadButton id={id} />
           <Link className="btn btn-ghost" to={`/envelope/${id}`}>Envelope</Link>
         </div>
       </div>
+      {error && <div className="error" role="alert" style={{ marginBottom: 12 }}>{error}</div>}
       <PdfViewer src={`/api/envelopes/${id}/file`} fields={env.status === "completed" ? [] : env.fields} />
     </div>
   );

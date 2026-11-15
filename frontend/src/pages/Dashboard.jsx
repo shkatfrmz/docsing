@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { api, downloadUrl } from "../api.js";
+import { api } from "../api.js";
 import { useAuth } from "../auth.jsx";
+import DownloadButton from "../components/DownloadButton.jsx";
 
 function badgeClass(status) {
   if (status === "completed") return "badge badge-completed";
@@ -49,7 +50,7 @@ function EnvelopeCard({ env, userEmail, onDuplicate }) {
         {env.status === "completed" && (
           <>
             <Link className="btn btn-ghost btn-sm" to={`/preview/${env.id}`}>Preview</Link>
-            <a className="btn btn-primary btn-sm" href={downloadUrl(env.id)}>Download</a>
+            <DownloadButton id={env.id} className="btn btn-primary btn-sm">Download</DownloadButton>
           </>
         )}
         {onDuplicate && (
@@ -143,8 +144,13 @@ export default function Dashboard() {
 
   async function removeTemplate(id) {
     if (!window.confirm("Delete this template?")) return;
-    await api.deleteTemplate(id);
-    setTemplates(await api.templates());
+    setError("");
+    try {
+      await api.deleteTemplate(id);
+      setTemplates(await api.templates());
+    } catch (e) {
+      setError(e.message);
+    }
   }
 
   async function duplicate(id) {

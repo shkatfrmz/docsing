@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth.jsx";
+import { safeNext } from "../api.js";
 
 export default function Signup() {
   const { signup } = useAuth();
@@ -23,7 +24,7 @@ export default function Signup() {
     setError("");
     try {
       await signup({ name, email, password });
-      nav(next.startsWith("/") ? next : "/app", { replace: true });
+      nav(safeNext(next), { replace: true });
     } catch (err) {
       setError(err.message);
     } finally {

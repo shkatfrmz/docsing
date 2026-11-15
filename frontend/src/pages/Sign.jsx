@@ -33,7 +33,7 @@ export default function Sign() {
           setDone(true);
           setCompleted(data.status === "completed");
         }
-        if (data.signer.status === "declined" || data.status === "declined" || data.status === "voided") {
+        if (data.signer.status === "declined" || data.status === "declined") {
           setDeclined(true);
         }
       })
@@ -43,52 +43,92 @@ export default function Sign() {
 
   const fields = useMemo(() => {
     if (!info) return [];
-    return info.fields.map((f) => ({ ...f, value: values[f.id] || f.value || "" }));
+    return info.fields.map((f) => ({ ...f, value: values[f.id] || "" }));
   }, [info, values]);
+
+  const closed = done || declined || !info || info.waitingOnPrior || info.status !== "sent";
 
   function applyValue(val) {
     if (!active) return;
     setValues((prev) => ({ ...prev, [active.id]: val }));
   }
 
-  function typedSignature(name) {
+  function initialsOf(name) {
+    return String(name || "")
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((part) => [...part][0])
+      .join("")
+      .slice(0, 4)
+      .toUpperCase();
+  }
+
+  function toggleCheckbox(f) {
+    setValues((prev) => ({ ...prev, [f.id]: prev[f.id] === "Yes" ? "" : "Yes" }));
+  }
+
+  // Opens the right editor for a field, from the list or from the document.
+  function openField(f) {
+    if (closed) return;
+    setError("");
+    if (f.type === "checkbox") {
+      toggleCheckbox(f);
+      return;
+    }
+    const current = values[f.id] || "";
+    const isMark = f.type === "signature" || f.type === "initials";
+    if (isMark) {
+      const saved = f.type === "initials" ? savedSig.initials : savedSig.signature;
+      setMode(saved ? "saved" : "draw");
+      setDraw("");
+      setTyped(f.type === "initials" ? initialsOf(info.signer.name) : info.signer.name || "");
+    } else if (f.type === "date") {
+      setTyped(current || new Date().toLocaleDateString());
+    } else if (f.type === "name") {
+      setTyped(current || info.signer.name || "");
+    } else {
+      setTyped(current);
+    }
+    setActive(f);
+  }
+
+  // Renders typed text as a signature image, sized to the text so long names
+  // are never cut off.
+  function typedSignature(text) {
+    const font = "italic 54px Georgia, 'Times New Roman', serif";
+    const probe = document.createElement("canvas").getContext("2d");
+    probe.font = font;
     const canvas = document.createElement("canvas");
-    canvas.width = 520;
-    canvas.height = 160;
+    canvas.width = Math.max(160, Math.ceil(probe.measureText(text).width) + 48);
+    canvas.height = 120;
     const ctx = canvas.getContext("2d");
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = "#0b1f3a";
-    ctx.font = "italic 54px Georgia, serif";
-    ctx.fillText(name, 24, 100);
+    ctx.font = font;
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, 24, 62);
     return canvas.toDataURL("image/png");
   }
 
   function saveField() {
     if (!active) return;
-    if (active.type === "checkbox") {
-      applyValue("Yes");
-    } else if (active.type === "signature" || active.type === "initials") {
+    const text = typed.trim();
+    if (active.type === "signature" || active.type === "initials") {
       const saved = active.type === "initials" ? savedSig.initials : savedSig.signature;
-      const img = mode === "saved" && saved
-        ? saved
-        : mode === "type"
-          ? typedSignature(typed || info.signer.name)
-          : draw;
+      let img = "";
+      if (mode === "saved" && saved) img = saved;
+      else if (mode === "type") img = text ? typedSignature(text) : "";
+      else img = draw;
       if (!img) {
-        setError("Draw, type, or use your saved signature first");
+        setError(mode === "type" ? "Type your name first" : "Draw your signature first, or switch to Type");
         return;
       }
       applyValue(img);
-    } else if (active.type === "date") {
-      applyValue(typed || new Date().toLocaleDateString());
-    } else if (active.type === "name") {
-      applyValue(typed || info.signer.name);
     } else {
-      if (!typed) {
+      if (!text && active.required !== false) {
         setError("Enter a value");
         return;
       }
-      applyValue(typed);
+      applyValue(text);
     }
     setActive(null);
     setError("");
@@ -98,13 +138,20 @@ export default function Sign() {
     setBusy(true);
     setError("");
     try {
-      const missing = fields.filter((f) => f.required && !values[f.id] && !f.value);
+      const missing = fields.filter((f) => f.required !== false && !values[f.id]);
       if (missing.length) {
-        throw new Error(`Fill every field first (${missing[0].type} still empty)`);
+        throw new Error(
+          missing.length === 1
+            ? `One required field is still empty (${missing[0].type})`
+            : `${missing.length} required fields are still empty`
+        );
       }
       const res = await api.sign(token, values);
       setDone(true);
       setCompleted(res.completed);
+      // Refresh so the list of parties shows the new status.
+      const fresh = await api.signInfo(token).catch(() => null);
+      if (fresh) setInfo(fresh);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -180,7 +227,7 @@ export default function Sign() {
             </div>
           )}
         </div>
-        {error && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
+        {error && !active && <div className="error" style={{ marginBottom: 12 }}>{error}</div>}
         {info.status === "expired" && (
           <div className="card" style={{ marginBottom: 16 }}>
             <h3>This envelope expired</h3>
@@ -255,31 +302,25 @@ export default function Sign() {
         <div className="layout-2">
           <aside className="sidebar card">
             <h3>Your fields</h3>
+            {!fields.length && <p className="meta">Nothing to fill in. Review the document, then finish.</p>}
+            {!!fields.length && !closed && (
+              <p className="meta" style={{ marginBottom: 8 }}>
+                {fields.filter((f) => values[f.id]).length} of {fields.length} filled
+              </p>
+            )}
             {fields.map((f) => (
               <button
                 type="button"
                 key={f.id}
                 className="field-chip"
-                onClick={() => {
-                  if (info.waitingOnPrior) return;
-                  if (f.type === "checkbox") {
-                    setValues((prev) => ({ ...prev, [f.id]: prev[f.id] === "Yes" ? "" : "Yes" }));
-                    return;
-                  }
-                  setActive(f);
-                  setError("");
-                  if (f.type === "date") setTyped(new Date().toLocaleDateString());
-                  if (f.type === "name") setTyped(info.signer.name);
-                  const saved = f.type === "initials" ? savedSig.initials : savedSig.signature;
-                  if ((f.type === "signature" || f.type === "initials") && saved) setMode("saved");
-                }}
-                disabled={done || declined || info.waitingOnPrior}
+                onClick={() => openField(f)}
+                disabled={closed}
               >
                 <span>{f.type}</span>
-                <span>{values[f.id] ? "Filled" : "Required"}</span>
+                <span>{values[f.id] ? "Filled" : f.required === false ? "Optional" : "Required"}</span>
               </button>
             ))}
-            <div className="hint">Click a field here or on the document, then adopt your signature.</div>
+            {!closed && <div className="hint">Click a field here or on the document, then adopt your signature.</div>}
             <label className="label">All parties</label>
             {info.allSigners.map((s) => (
               <div key={s.id} className="meta" style={{ marginBottom: 6 }}>
@@ -288,17 +329,10 @@ export default function Sign() {
             ))}
           </aside>
           <PdfViewer
-            src={`/api/sign/${token}/file`}
-            fields={fields}
+            src={`/api/sign/${token}/file${completed ? "?final=1" : ""}`}
+            fields={completed ? [] : fields}
             activeId={active?.id}
-            onSelect={(f) => {
-              if (done || declined || info.waitingOnPrior) return;
-              if (f.type === "checkbox") {
-                setValues((prev) => ({ ...prev, [f.id]: prev[f.id] === "Yes" ? "" : "Yes" }));
-                return;
-              }
-              setActive(f);
-            }}
+            onSelect={openField}
             renderValue={(f) => {
               if (f.type === "checkbox") {
                 return f.value === "Yes" ? "X" : "";
@@ -312,7 +346,7 @@ export default function Sign() {
         </div>
       </div>
 
-      {active && !done && !declined && !info.waitingOnPrior && (
+      {active && !closed && (
         <div className="modal-back" onClick={() => setActive(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="kicker">Fill field</div>
@@ -333,23 +367,34 @@ export default function Sign() {
                     style={{ width: "100%", maxHeight: 120, objectFit: "contain", background: "#fff", borderRadius: 8 }}
                   />
                 ) : mode === "draw" ? (
-                  <SignaturePad onChange={setDraw} />
+                  <SignaturePad
+                    key={active.id}
+                    onChange={setDraw}
+                    hint={active.type === "initials" ? "Draw your initials above" : "Draw your signature above"}
+                  />
                 ) : (
-                  <input className="input" value={typed} onChange={(e) => setTyped(e.target.value)} />
+                  <input
+                    className="input"
+                    autoFocus
+                    value={typed}
+                    onChange={(e) => setTyped(e.target.value)}
+                    placeholder={active.type === "initials" ? "Your initials" : "Your full name"}
+                  />
                 )}
               </>
             )}
             {active.type === "name" && (
-              <input className="input" value={typed} onChange={(e) => setTyped(e.target.value)} />
+              <input className="input" autoFocus value={typed} onChange={(e) => setTyped(e.target.value)} />
             )}
             {active.type === "text" && (
-              <input className="input" value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="Enter text" />
+              <input className="input" autoFocus maxLength={500} value={typed} onChange={(e) => setTyped(e.target.value)} placeholder="Enter text" />
             )}
             {active.type === "date" && (
-              <input className="input" value={typed || new Date().toLocaleDateString()} onChange={(e) => setTyped(e.target.value)} />
+              <input className="input" autoFocus value={typed} onChange={(e) => setTyped(e.target.value)} />
             )}
+            {error && <div className="error">{error}</div>}
             <div className="row" style={{ marginTop: 16, justifyContent: "flex-end" }}>
-              <button type="button" className="btn btn-ghost" onClick={() => setActive(null)}>Cancel</button>
+              <button type="button" className="btn btn-ghost" onClick={() => { setActive(null); setError(""); }}>Cancel</button>
               <button type="button" className="btn btn-gold" onClick={saveField}>Adopt and continue</button>
             </div>
           </div>

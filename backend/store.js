@@ -2,8 +2,9 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 
-const DATA_DIR = path.join(__dirname, "data");
+const DATA_DIR = process.env.DOCYSIGN_DATA_DIR || path.join(__dirname, "data");
 const STORE_FILE = path.join(DATA_DIR, "db.json");
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 function empty() {
   return { users: [], sessions: [], envelopes: [], mail: [], smtp: null, contacts: [], templates: [] };
@@ -11,43 +12,58 @@ function empty() {
 
 function ensureDir() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (!fs.existsSync(STORE_FILE)) {
-    fs.writeFileSync(STORE_FILE, JSON.stringify(empty(), null, 2));
-  }
+  if (!fs.existsSync(STORE_FILE)) write(empty(), true);
 }
 
 function read() {
   ensureDir();
+  let data;
   try {
-    const data = JSON.parse(fs.readFileSync(STORE_FILE, "utf8"));
-    data.users = data.users || [];
-    data.sessions = data.sessions || [];
-    data.envelopes = data.envelopes || [];
-    data.mail = data.mail || [];
-    data.smtp = data.smtp || null;
-    data.contacts = data.contacts || [];
-    data.templates = data.templates || [];
-    let changed = false;
-    data.users.forEach((u) => {
-      if (!u.role) {
-        u.role = "user";
-        changed = true;
-      }
-    });
-    if (data.users.length && !data.users.some((u) => u.role === "admin")) {
-      data.users[0].role = "admin";
+    data = JSON.parse(fs.readFileSync(STORE_FILE, "utf8"));
+  } catch (cause) {
+    // Never fall back to an empty store here: the next write would replace
+    // every user and envelope on disk with nothing.
+    const err = new Error(
+      `The data file ${STORE_FILE} could not be read (${cause.message}). ` +
+      "Fix or restore it, then try again. Nothing was changed."
+    );
+    err.status = 500;
+    throw err;
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    const err = new Error(`The data file ${STORE_FILE} does not contain a DocySign database.`);
+    err.status = 500;
+    throw err;
+  }
+  data.users = data.users || [];
+  data.sessions = data.sessions || [];
+  data.envelopes = data.envelopes || [];
+  data.mail = data.mail || [];
+  data.smtp = data.smtp || null;
+  data.contacts = data.contacts || [];
+  data.templates = data.templates || [];
+  let changed = false;
+  data.users.forEach((u) => {
+    if (!u.role) {
+      u.role = "user";
       changed = true;
     }
-    if (changed) write(data);
-    return data;
-  } catch {
-    return empty();
+  });
+  if (data.users.length && !data.users.some((u) => u.role === "admin")) {
+    data.users[0].role = "admin";
+    changed = true;
   }
+  if (changed) write(data);
+  return data;
 }
 
-function write(data) {
-  ensureDir();
-  fs.writeFileSync(STORE_FILE, JSON.stringify(data, null, 2));
+// Write to a temp file and rename it into place, so a crash mid-write leaves
+// the previous database intact instead of a half-written one.
+function write(data, skipEnsure) {
+  if (!skipEnsure) ensureDir();
+  const tmp = `${STORE_FILE}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+  fs.renameSync(tmp, STORE_FILE);
 }
 
 function hashPassword(password, salt) {
@@ -230,6 +246,11 @@ function getSignature(id) {
   };
 }
 
+function sessionExpired(session) {
+  const created = new Date(session.createdAt).getTime();
+  return !Number.isFinite(created) || Date.now() - created > SESSION_TTL_MS;
+}
+
 function createSession(userId) {
   const data = read();
   const session = {
@@ -237,6 +258,7 @@ function createSession(userId) {
     userId,
     createdAt: new Date().toISOString(),
   };
+  data.sessions = data.sessions.filter((s) => !sessionExpired(s));
   data.sessions.push(session);
   write(data);
   return session;
@@ -244,12 +266,21 @@ function createSession(userId) {
 
 function getSession(token) {
   if (!token) return null;
-  return read().sessions.find((s) => s.token === token) || null;
+  const session = read().sessions.find((s) => s.token === token);
+  if (!session || sessionExpired(session)) return null;
+  return session;
 }
 
 function deleteSession(token) {
   const data = read();
   data.sessions = data.sessions.filter((s) => s.token !== token);
+  write(data);
+}
+
+// Signs a user out everywhere, optionally keeping the session they are using.
+function deleteUserSessions(userId, keepToken) {
+  const data = read();
+  data.sessions = data.sessions.filter((s) => s.userId !== userId || s.token === keepToken);
   write(data);
 }
 
@@ -426,6 +457,7 @@ module.exports = {
   createSession,
   getSession,
   deleteSession,
+  deleteUserSessions,
   listEnvelopes,
   getEnvelope,
   getByToken,

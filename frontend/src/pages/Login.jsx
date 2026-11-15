@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth.jsx";
+import { safeNext } from "../api.js";
 
 export default function Login() {
   const { login } = useAuth();
@@ -19,7 +20,7 @@ export default function Login() {
     setError("");
     try {
       await login({ email, password });
-      nav(next.startsWith("/") ? next : "/app", { replace: true });
+      nav(safeNext(next), { replace: true });
     } catch (err) {
       setError(err.message);
     } finally {

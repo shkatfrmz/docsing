@@ -1,5 +1,6 @@
 const fs = require("fs");
 const nodemailer = require("nodemailer");
+const graph = require("./graph");
 
 function escapeHtml(value) {
   return String(value || "")
@@ -10,45 +11,68 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
+// Mail can go out two ways: "smtp" (any mail server or relay service) or
+// "graph" (Microsoft 365 through the Graph API, signed in as an app).
+function providerOf(settings) {
+  return settings && settings.provider === "graph" ? "graph" : "smtp";
+}
+
 function envSettings() {
-  if (!process.env.SMTP_HOST && !process.env.SMTP_USER) return null;
+  const env = process.env;
+  if (String(env.MAIL_PROVIDER || "").toLowerCase() === "graph" || (env.MS_TENANT_ID && env.MS_CLIENT_ID)) {
+    return {
+      provider: "graph",
+      preset: "m365-graph",
+      tenantId: env.MS_TENANT_ID || "",
+      clientId: env.MS_CLIENT_ID || "",
+      clientSecret: env.MS_CLIENT_SECRET || "",
+      fromName: env.SMTP_FROM_NAME || "DocySign",
+      fromEmail: env.MS_SENDER || env.SMTP_FROM || "",
+    };
+  }
+  if (!env.SMTP_HOST && !env.SMTP_USER) return null;
   return {
-    host: process.env.SMTP_HOST || "smtp.gmail.com",
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: String(process.env.SMTP_SECURE || "false") === "true",
-    user: process.env.SMTP_USER || "",
-    pass: process.env.SMTP_PASS || "",
-    fromName: process.env.SMTP_FROM_NAME || "DocySign",
-    fromEmail: process.env.SMTP_FROM || process.env.SMTP_USER || "",
+    provider: "smtp",
+    preset: "custom",
+    host: env.SMTP_HOST || "smtp.gmail.com",
+    port: Number(env.SMTP_PORT || 587),
+    secure: String(env.SMTP_SECURE || "false") === "true",
+    noAuth: String(env.SMTP_NO_AUTH || "false") === "true",
+    allowSelfSigned: String(env.SMTP_ALLOW_SELF_SIGNED || "false") === "true",
+    user: env.SMTP_USER || "",
+    pass: env.SMTP_PASS || "",
+    fromName: env.SMTP_FROM_NAME || "DocySign",
+    fromEmail: env.SMTP_FROM || env.SMTP_USER || "",
   };
 }
 
 function isConfigured(settings) {
-  return !!(settings && settings.host && settings.user && settings.pass);
+  if (!settings) return false;
+  if (providerOf(settings) === "graph") return graph.isConfigured(settings);
+  if (!settings.host) return false;
+  // A trusted relay takes mail without a sign-in, but needs a From address.
+  if (settings.noAuth) return !!settings.fromEmail;
+  return !!(settings.user && settings.pass);
 }
 
 function publicSettings(settings) {
-  if (!settings) {
-    return {
-      configured: false,
-      host: "",
-      port: 587,
-      secure: false,
-      user: "",
-      fromName: "DocySign",
-      fromEmail: "",
-      hasPassword: false,
-    };
-  }
+  const s = settings || {};
   return {
     configured: isConfigured(settings),
-    host: settings.host || "",
-    port: settings.port || 587,
-    secure: !!settings.secure,
-    user: settings.user || "",
-    fromName: settings.fromName || "DocySign",
-    fromEmail: settings.fromEmail || settings.user || "",
-    hasPassword: !!settings.pass,
+    provider: providerOf(settings),
+    preset: s.preset || (settings ? "custom" : "gmail"),
+    host: s.host || "",
+    port: s.port || 587,
+    secure: !!s.secure,
+    noAuth: !!s.noAuth,
+    allowSelfSigned: !!s.allowSelfSigned,
+    user: s.user || "",
+    fromName: s.fromName || "DocySign",
+    fromEmail: s.fromEmail || s.user || "",
+    hasPassword: !!s.pass,
+    tenantId: s.tenantId || "",
+    clientId: s.clientId || "",
+    hasClientSecret: !!s.clientSecret,
   };
 }
 
@@ -139,10 +163,12 @@ function wrapHtml({
 }
 
 // Certificates are verified by default. A mail server on this machine, or one
-// explicitly allowed with SMTP_ALLOW_SELF_SIGNED=true, may use a self-signed one.
-function allowSelfSigned(host) {
+// explicitly allowed in the settings or with SMTP_ALLOW_SELF_SIGNED=true, may
+// use a self-signed one (common for an internal relay reached by IP address).
+function allowSelfSigned(settings) {
+  if (settings.allowSelfSigned) return true;
   if (String(process.env.SMTP_ALLOW_SELF_SIGNED || "").toLowerCase() === "true") return true;
-  return ["localhost", "127.0.0.1", "::1"].includes(String(host || "").toLowerCase());
+  return ["localhost", "127.0.0.1", "::1"].includes(String(settings.host || "").toLowerCase());
 }
 
 function createTransport(settings) {
@@ -150,11 +176,9 @@ function createTransport(settings) {
     host: settings.host,
     port: Number(settings.port) || 587,
     secure: !!settings.secure || Number(settings.port) === 465,
-    auth: {
-      user: settings.user,
-      pass: settings.pass,
-    },
-    tls: { rejectUnauthorized: !allowSelfSigned(settings.host) },
+    // Left out for a trusted relay that accepts mail without a sign-in.
+    auth: settings.noAuth || !settings.user ? undefined : { user: settings.user, pass: settings.pass },
+    tls: { rejectUnauthorized: !allowSelfSigned(settings) },
     connectionTimeout: 15000,
     greetingTimeout: 15000,
     socketTimeout: 30000,
@@ -164,6 +188,9 @@ function createTransport(settings) {
 async function sendMail(settings, { to, toName, subject, html, text, attachments }) {
   if (!isConfigured(settings)) {
     return { sent: false, skipped: true, error: "SMTP is not configured" };
+  }
+  if (providerOf(settings) === "graph") {
+    return graph.send(settings, { to, toName, subject, html, attachments });
   }
   const transporter = createTransport(settings);
   // Address objects let nodemailer quote names safely, whatever they contain.
@@ -456,17 +483,17 @@ async function sendTestEmail(settings, to) {
     intro: "Delivery test",
     title: "Your DocySign mail settings are working",
     greeting: "Hello,",
-    body: "This is a test message from DocySign. If you received it, your Gmail or Postfix SMTP configuration is ready to send signing requests.",
-    details: [{ label: "Status", value: "SMTP connected" }],
+    body: "This is a test message from DocySign. If you received it, your email settings are ready to send signing requests.",
+    details: [{ label: "Status", value: "Email connected" }],
     ctaLabel: "",
     ctaHref: "",
     footer: "You can ignore this message. It was sent from Email settings in your DocySign workspace.",
   });
   return sendMail(settings, {
     to,
-    subject: "DocySign SMTP test",
+    subject: "DocySign email test",
     html,
-    text: "DocySign SMTP test succeeded.",
+    text: "DocySign email test succeeded.",
   });
 }
 
